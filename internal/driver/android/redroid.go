@@ -39,6 +39,8 @@ type redroid struct {
 	docker *dockerapi.Client
 	// binderCheck verifies kernel binder support (overridable in tests).
 	binderCheck func() error
+	// ashmemCheck reports whether the kernel has ashmem (overridable in tests).
+	ashmemCheck func() bool
 }
 
 func newRedroid(env driver.Env, cfg RedroidConfig) *redroid {
@@ -67,13 +69,21 @@ func newRedroid(env driver.Env, cfg RedroidConfig) *redroid {
 		t := true
 		cfg.UseMemfd = &t
 	}
-	return &redroid{cfg: cfg, env: env, docker: dockerapi.New(cfg.Socket), binderCheck: checkBinder}
+	return &redroid{cfg: cfg, env: env, docker: dockerapi.New(cfg.Socket), binderCheck: checkBinder, ashmemCheck: hasAshmem}
 }
 
 func (r *redroid) name() string       { return "redroid" }
 func (r *redroid) services() []string { return []string{"adb"} }
 
 func (r *redroid) serviceEndpoint(context.Context, string, string) (string, bool) { return "", false }
+
+// hasAshmem reports whether the kernel provides the ashmem misc device.
+// /proc/misc is kernel-wide, so this also works inside the agent container.
+// Linux removed ashmem in 5.18; some distributions ship it as a module.
+func hasAshmem() bool {
+	b, err := os.ReadFile("/proc/misc")
+	return err == nil && strings.Contains(string(b), " ashmem\n")
+}
 
 // checkBinder looks for binder support: binderfs in /proc/filesystems or a
 // /dev/binder device (binder_linux module loaded).
@@ -158,6 +168,12 @@ func (r *redroid) containerConfig(spec *agentv1.DeviceSpec) dockerapi.ContainerC
 }
 
 func (r *redroid) ensure(ctx context.Context, spec *agentv1.DeviceSpec, report driver.Reporter) error {
+	// Some images (e.g. redroid 16) still allocate graphics buffers via
+	// ashmem even with use_memfd; without it SurfaceFlinger crash-loops and
+	// Android never finishes booting.
+	if spec.GetTemplate().GetParams()["redroid.requires_ashmem"] == "true" && !r.ashmemCheck() {
+		return errors.New("this Android image needs the ashmem kernel driver, which this node's kernel does not provide (removed in Linux 5.18); use the Android 15 template or a node with ashmem")
+	}
 	cname := driver.DomainName(spec.DeviceId)
 	ci, err := r.docker.InspectContainer(ctx, cname)
 	if errors.Is(err, dockerapi.ErrNotFound) {

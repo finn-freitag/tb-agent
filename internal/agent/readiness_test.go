@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
 	"testing"
 )
 
@@ -43,7 +44,61 @@ func TestCheckReadyRDP(t *testing.T) {
 	if checkReady(ctx, "rdp", forwarder) {
 		t.Error("accept-and-close forwarder detected as ready")
 	}
-	if !checkReady(ctx, "adb", forwarder) {
-		t.Error("adb should only need a TCP connect")
+}
+
+// fakeAdbd answers CNXN and a getprop shell with value.
+func fakeAdbd(value string) func(net.Conn) {
+	return func(c net.Conn) {
+		for {
+			m, err := adbRead(c)
+			if err != nil {
+				return
+			}
+			switch m.cmd {
+			case adbCNXN:
+				adbWrite(c, adbCNXN, 0x01000001, 256*1024, []byte("device::ro.product.name=redroid;\x00"))
+			case adbOPEN:
+				adbWrite(c, adbOKAY, 7, m.arg0, nil)
+				adbWrite(c, adbWRTE, 7, m.arg0, []byte(value))
+				if r, err := adbRead(c); err != nil || r.cmd != adbOKAY {
+					return
+				}
+				adbWrite(c, adbCLSE, 7, m.arg0, nil)
+			}
+		}
+	}
+}
+
+func TestCheckReadyADB(t *testing.T) {
+	ctx := context.Background()
+	if !checkReady(ctx, "adb", serve(t, fakeAdbd("1\n"))) {
+		t.Error("booted device not ready")
+	}
+	if checkReady(ctx, "adb", serve(t, fakeAdbd("\n"))) {
+		t.Error("device still booting counted as ready")
+	}
+	if checkReady(ctx, "adb", serve(t, func(c net.Conn) {})) {
+		t.Error("accept-and-close counted as ready")
+	}
+	auth := serve(t, func(c net.Conn) {
+		if _, err := adbRead(c); err == nil {
+			adbWrite(c, adbAUTH, 1, 0, make([]byte, 20))
+		}
+	})
+	if !checkReady(ctx, "adb", auth) {
+		t.Error("adbd with auth should fall back to ready")
+	}
+}
+
+// TB_ADB_ADDR=host:port go test -run TestRealADB ./internal/agent/ checks a
+// real adbd; TB_ADB_BOOTED is the expected result ("1" or "0").
+func TestRealADB(t *testing.T) {
+	addr := os.Getenv("TB_ADB_ADDR")
+	if addr == "" {
+		t.Skip("TB_ADB_ADDR not set")
+	}
+	want := os.Getenv("TB_ADB_BOOTED") == "1"
+	if got := checkReady(context.Background(), "adb", addr); got != want {
+		t.Fatalf("checkReady(adb, %s) = %v, want %v", addr, got, want)
 	}
 }

@@ -178,6 +178,18 @@ func TestRedroidLifecycle(t *testing.T) {
 	if c := d.Capabilities(ctx); c.Healthy || !strings.Contains(c.Message, "redroid") {
 		t.Fatal(c)
 	}
+	// Images that need ashmem fail fast on kernels without it.
+	r.ashmemCheck = func() bool { return false }
+	s = spec("redroid")
+	s.Template.Params["redroid.requires_ashmem"] = "true"
+	if err := d.Ensure(ctx, s, report); err == nil || !strings.Contains(err.Error(), "ashmem") {
+		t.Fatalf("want ashmem error, got %v", err)
+	}
+	r.ashmemCheck = func() bool { return true }
+	r.binderCheck = func() error { return nil }
+	if err := d.Ensure(ctx, s, report); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCuttlefish(t *testing.T) {
