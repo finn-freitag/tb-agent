@@ -331,7 +331,7 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 		Password:   password,
 		SSHKeys:    spec.GetSshAuthorizedKeys(),
 		ProductKey: productKey,
-	})
+	}.WithTemplate(tpl.GetParams()))
 	if err != nil {
 		return golibvirt.Domain{}, err
 	}

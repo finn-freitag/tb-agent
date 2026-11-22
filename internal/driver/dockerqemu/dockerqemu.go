@@ -382,7 +382,7 @@ func (d *Driver) create(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 		seed, err := cloudinit.Linux(cloudinit.Params{
 			InstanceID: id, Hostname: spec.GetHostname(), User: user, Password: password,
 			SSHKeys: spec.GetSshAuthorizedKeys(),
-		})
+		}.WithTemplate(spec.GetTemplate().GetParams()))
 		if err != nil {
 			return err
 		}

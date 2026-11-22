@@ -24,6 +24,26 @@ type Params struct {
 	// NoGuestAgent skips qemu-guest-agent (containers have no virtio port;
 	// enabling it there only blocks cloud-init until systemd times out).
 	NoGuestAgent bool
+	// Script is an optional shell script run as root once, after packages are
+	// installed (template param cloudinit.script). Output goes to
+	// /var/log/tossbox-setup.log.
+	Script string
+}
+
+// TemplateExtras reads the generic cloud-init template params:
+// cloudinit.packages (space or comma separated) and cloudinit.script.
+func TemplateExtras(params map[string]string) (packages []string, script string) {
+	return strings.Fields(strings.ReplaceAll(params["cloudinit.packages"], ",", " ")), params["cloudinit.script"]
+}
+
+// WithTemplate returns p with the template's generic cloud-init extras added.
+func (p Params) WithTemplate(params map[string]string) Params {
+	pkgs, script := TemplateExtras(params)
+	p.Packages = append(append([]string(nil), p.Packages...), pkgs...)
+	if script != "" {
+		p.Script = script
+	}
+	return p
 }
 
 // Seed holds the NoCloud files.
@@ -74,6 +94,11 @@ func Linux(p Params) (Seed, error) {
 		runcmd = append(runcmd, []string{"sh", "-c", "systemctl enable --now --no-block qemu-guest-agent 2>/dev/null || true"})
 	}
 	pkgs = append(pkgs, p.Packages...)
+	var files []any
+	if p.Script != "" {
+		files = append(files, map[string]any{"path": "/var/lib/tossbox/setup.sh", "permissions": "0755", "content": p.Script})
+		runcmd = append(runcmd, []string{"sh", "-c", "bash /var/lib/tossbox/setup.sh > /var/log/tossbox-setup.log 2>&1"})
+	}
 	cfg := map[string]any{
 		"hostname":         p.Hostname,
 		"manage_etc_hosts": true,
@@ -85,6 +110,9 @@ func Linux(p Params) (Seed, error) {
 		"ssh_pwauth": true,
 		"packages":   pkgs,
 		"runcmd":     runcmd,
+	}
+	if len(files) > 0 {
+		cfg["write_files"] = files
 	}
 	body, err := yaml.Marshal(cfg)
 	if err != nil {

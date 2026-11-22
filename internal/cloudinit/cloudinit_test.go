@@ -61,3 +61,18 @@ func TestWindowsSeedQuoting(t *testing.T) {
 		t.Error("expected unsupported profile error")
 	}
 }
+
+func TestLinuxTemplateExtras(t *testing.T) {
+	p := Params{InstanceID: "x", Hostname: "h", User: "u", Password: "p", Packages: []string{"openssh-server"}}.
+		WithTemplate(map[string]string{"cloudinit.packages": "xrdp, task-gnome-desktop", "cloudinit.script": "echo hi\n"})
+	s, err := Linux(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := string(s.UserData)
+	for _, want := range []string{"- openssh-server", "- xrdp", "- task-gnome-desktop", "/var/lib/tossbox/setup.sh", "echo hi", "tossbox-setup.log"} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("user-data lacks %q:\n%s", want, ud)
+		}
+	}
+}

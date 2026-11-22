@@ -169,7 +169,7 @@ func (d *Driver) buildCreate(spec *agentv1.DeviceSpec) (instancesPost, error) {
 		// images: cloud variants have cloud-init but no SSH server.
 		Packages:     strings.Fields(strings.ReplaceAll(cmpOr(params["lxc.packages"], "openssh-server"), ",", " ")),
 		NoGuestAgent: typ == "container",
-	})
+	}.WithTemplate(params))
 	if err != nil {
 		return instancesPost{}, err
 	}
