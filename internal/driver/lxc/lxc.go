@@ -53,6 +53,10 @@ type Config struct {
 	// systemd (257+) needs to boot on hosts that restrict unprivileged user
 	// namespaces via AppArmor (e.g. Ubuntu 24.04+). Set a key to override.
 	ContainerConfig map[string]string `yaml:"container_config"`
+	// IsolatePorts copies the profiles' bridged NICs onto each instance with
+	// security.port_isolation=true, so devices can't reach each other.
+	// Default true.
+	IsolatePorts *bool `yaml:"isolate_ports"`
 }
 
 func (c *Config) defaults() {
@@ -223,6 +227,19 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 		if err != nil {
 			return err
 		}
+		if d.cfg.IsolatePorts == nil || *d.cfg.IsolatePorts {
+			var profiles []map[string]map[string]string
+			for _, pn := range d.cfg.Profiles {
+				devs, err := d.incus.profileDevices(ctx, pn)
+				if err != nil {
+					return fmt.Errorf("profile %s: %w", pn, err)
+				}
+				profiles = append(profiles, devs)
+			}
+			for n, dev := range isolatedNICs(profiles) {
+				body.Devices[n] = dev
+			}
+		}
 		report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating container (downloading image if needed)")
 		if err := d.incus.create(ctx, body); err != nil {
 			return err
@@ -384,4 +401,34 @@ func cmpOr(v, def string) string {
 		return v
 	}
 	return def
+}
+
+// isolatedNICs returns the effective bridged NICs of the given profiles
+// (later profiles override earlier ones) with security.port_isolation set.
+// Other NIC types (macvlan, physical, ...) don't support isolation and are
+// left to the profiles.
+func isolatedNICs(profiles []map[string]map[string]string) map[string]map[string]string {
+	eff := map[string]map[string]string{}
+	for _, devs := range profiles {
+		for n, dev := range devs {
+			eff[n] = dev
+		}
+	}
+	out := map[string]map[string]string{}
+	for n, dev := range eff {
+		if dev["type"] != "nic" {
+			continue
+		}
+		bridged := dev["nictype"] == "bridged" || (dev["nictype"] == "" && dev["network"] != "")
+		if !bridged {
+			continue
+		}
+		c := make(map[string]string, len(dev)+1)
+		for k, v := range dev {
+			c[k] = v
+		}
+		c["security.port_isolation"] = "true"
+		out[n] = c
+	}
+	return out
 }

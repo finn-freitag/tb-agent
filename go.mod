@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/digitalocean/go-libvirt v0.0.0-20261013170128-efbbdf578ac8
-	github.com/finn-freitag/tb-proto v0.2.0
+	github.com/finn-freitag/tb-proto v0.3.0
 	github.com/kdomanski/iso9660 v0.4.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"regexp"
 	"sort"
@@ -16,14 +17,19 @@ import (
 
 // Config is the parsed node config.
 type Config struct {
-	Name          string                 `yaml:"name"`
-	Dashboard     Dashboard              `yaml:"dashboard"`
-	DataDir       string                 `yaml:"data_dir"`
-	ListenAddress string                 `yaml:"listen_address"`
-	Limits        Limits                 `yaml:"limits"`
-	Drivers       map[string]yaml.Node   `yaml:"drivers"`
-	LicensePools  map[string]LicensePool `yaml:"license_pools"`
-	LogLevel      string                 `yaml:"log_level"`
+	Name          string    `yaml:"name"`
+	Dashboard     Dashboard `yaml:"dashboard"`
+	DataDir       string    `yaml:"data_dir"`
+	ListenAddress string    `yaml:"listen_address"`
+	// AllowedSources limits who may connect to forwarded device ports: IPs,
+	// CIDRs, "dashboard" (addresses of dashboard.endpoint), "private" (LAN,
+	// ULA and Tailscale ranges) or "any". Default: [dashboard, private].
+	// Loopback and the host's own addresses always work.
+	AllowedSources []string               `yaml:"allowed_sources"`
+	Limits         Limits                 `yaml:"limits"`
+	Drivers        map[string]yaml.Node   `yaml:"drivers"`
+	LicensePools   map[string]LicensePool `yaml:"license_pools"`
+	LogLevel       string                 `yaml:"log_level"`
 
 	// Parsed limits.
 	RAMLimitMB     int64 `yaml:"-"`
@@ -101,6 +107,18 @@ func (c *Config) normalize() error {
 	}
 	if ip := net.ParseIP(c.ListenAddress); ip == nil {
 		errs = append(errs, fmt.Sprintf("listen_address %q is not an IP address", c.ListenAddress))
+	}
+	if len(c.AllowedSources) == 0 {
+		c.AllowedSources = []string{"dashboard", "private"}
+	}
+	for _, e := range c.AllowedSources {
+		switch strings.ToLower(strings.TrimSpace(e)) {
+		case "any", "dashboard", "private":
+			continue
+		}
+		if !validSource(e) {
+			errs = append(errs, fmt.Sprintf("allowed_sources: %q is not an IP, CIDR, \"dashboard\", \"private\" or \"any\"", e))
+		}
 	}
 	var err error
 	if c.RAMLimitMB, err = ParseSizeMB(c.Limits.RAM); err != nil {
@@ -189,4 +207,13 @@ func ParsePercent(s string) (int32, error) {
 		return 0, fmt.Errorf("invalid percentage %q (1-100)", s)
 	}
 	return int32(v), nil
+}
+
+func validSource(e string) bool {
+	e = strings.TrimSpace(e)
+	if _, err := netip.ParsePrefix(e); err == nil {
+		return true
+	}
+	_, err := netip.ParseAddr(e)
+	return err == nil
 }

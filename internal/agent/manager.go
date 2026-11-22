@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	agentv1 "github.com/finn-freitag/tb-proto/gen/agent/v1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 	"github.com/finn-freitag/tb-agent/internal/driver"
 )
 
@@ -51,6 +53,8 @@ type Manager struct {
 	licenses driver.Licenses
 	store    *Store
 	fwd      *Forwarder
+	// adbKey answers adb AUTH challenges in readiness checks (nil = none).
+	adbKey *adbkey.Key
 
 	mu      sync.Mutex
 	devices map[string]*device
@@ -195,8 +199,16 @@ func (m *Manager) SetDesired(specs []*agentv1.DeviceSpec) {
 	m.persistLocked()
 }
 
+// validDeviceID guards against IDs that could escape data directories or
+// break backend object names (the dashboard sends UUIDs).
+var validDeviceID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`)
+
 // Apply sets the desired spec of one device.
 func (m *Manager) Apply(spec *agentv1.DeviceSpec) {
+	if !validDeviceID.MatchString(spec.GetDeviceId()) {
+		m.log.Error("ignoring device spec with invalid id", "device", spec.GetDeviceId())
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.devices[spec.DeviceId]
@@ -222,6 +234,10 @@ func (m *Manager) Apply(spec *agentv1.DeviceSpec) {
 
 // Delete marks a device for destruction.
 func (m *Manager) Delete(id string) {
+	if !validDeviceID.MatchString(id) {
+		m.log.Error("ignoring delete for invalid device id", "device", id)
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d, ok := m.devices[id]
@@ -468,7 +484,7 @@ func (m *Manager) refresh(ctx context.Context, d *device) {
 			} else {
 				ep = m.endpoint(ctx, drv, d.id, st.InternalIp, kind, port)
 			}
-			st.Ready = checkReady(ctx, kind, ep)
+			st.Ready = checkReadyWith(ctx, kind, ep, m.adbKey)
 			if st.Ready {
 				readyAt = time.Now()
 			}

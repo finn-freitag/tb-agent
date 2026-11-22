@@ -50,6 +50,10 @@ type Config struct {
 	// Bridge attaches devices to a host bridge instead of a libvirt network.
 	// The agent must then be able to discover IPs via the guest agent.
 	Bridge string `yaml:"bridge"`
+	// IsolatePorts marks each device's bridge port isolated, so devices on
+	// the same network can't reach each other (only the host/uplink).
+	// Default true.
+	IsolatePorts *bool `yaml:"isolate_ports"`
 	// StoragePool holds all device disks (default "default").
 	StoragePool string `yaml:"storage_pool"`
 	// Families this node offers (default [linux, windows]).
@@ -373,7 +377,7 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 		Machine: d.cfg.Machine, CPUMode: d.cfg.CPUMode,
 		DiskPath: diskPath, ISOPath: isoPath,
 		DiskBus: "virtio", NetModel: "virtio", Video: "virtio",
-		Network: d.cfg.Network, Bridge: d.cfg.Bridge,
+		Network: d.cfg.Network, Bridge: d.cfg.Bridge, IsolatePorts: boolOr(d.cfg.IsolatePorts, true),
 		VNCListen: d.cfg.VNCListen, VNCPassword: vncPW,
 		Windows: win,
 	}

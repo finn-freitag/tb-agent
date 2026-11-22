@@ -20,6 +20,7 @@ type domainParams struct {
 	DiskPath, ISOPath                                   string
 	DiskBus, NetModel, Video                            string
 	Network, Bridge                                     string
+	IsolatePorts                                        bool
 	VNCListen, VNCPassword                              string
 	Windows                                             bool
 	SecureBoot, TPM                                     bool
@@ -125,11 +126,17 @@ var domainTmpl = template.Must(template.New("domain").Funcs(template.FuncMap{"x"
     <interface type='bridge'>
       <source bridge='{{x .Bridge}}'/>
       <model type='{{x .NetModel}}'/>
+      {{- if .IsolatePorts}}
+      <port isolated='yes'/>
+      {{- end}}
     </interface>
 {{- else}}
     <interface type='network'>
       <source network='{{x .Network}}'/>
       <model type='{{x .NetModel}}'/>
+      {{- if .IsolatePorts}}
+      <port isolated='yes'/>
+      {{- end}}
     </interface>
 {{- end}}
     <serial type='pty'>

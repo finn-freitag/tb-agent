@@ -17,6 +17,13 @@ data_dir: /var/lib/tb-agent
 # (e.g. 0.0.0.0, or the node's Tailscale IP).
 listen_address: 0.0.0.0
 
+# Who may connect to forwarded device ports. Devices should be reached through
+# the dashboard gateway, which enforces allowlists and rate limits. Entries:
+# IPs/CIDRs, "dashboard" (addresses of dashboard.endpoint), "private" (LAN,
+# IPv6 ULA and Tailscale 100.64.0.0/10; needed for exposure "none") or "any".
+# Loopback and this host's own addresses always work.
+# allowed_sources: [dashboard, private]   # default
+
 # Caps for all devices on this node together (other services need resources too).
 limits:
   ram: 16G
@@ -28,6 +35,7 @@ drivers:
   libvirt:
     socket: /var/run/libvirt/libvirt-sock
     network: default        # libvirt network (or set bridge: br0)
+    # isolate_ports: true   # default: VMs on the network can't reach each other
     storage_pool: default   # all device disks are created in this pool
     families: [linux, windows]
     # vnc_listen: 127.0.0.1

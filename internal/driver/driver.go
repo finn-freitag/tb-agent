@@ -80,6 +80,10 @@ type Env struct {
 	Images   Images
 	Licenses Licenses
 	Log      *slog.Logger
+	// ADBPublicKey is the agent's own adb key (adb_keys format). Drivers
+	// that enable adb authentication install it next to the user's keys so
+	// readiness checks can authenticate.
+	ADBPublicKey string
 }
 
 // Factory creates a driver from its YAML config section (may be nil/empty).

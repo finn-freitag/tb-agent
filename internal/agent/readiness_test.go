@@ -1,11 +1,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 )
 
 func serve(t *testing.T, handle func(net.Conn)) string {
@@ -90,6 +97,64 @@ func TestCheckReadyADB(t *testing.T) {
 	}
 }
 
+// With a key, the probe answers the AUTH challenge and then really checks
+// the boot state.
+func TestCheckReadyADBAuth(t *testing.T) {
+	key, err := adbkey.LoadOrCreate(filepath.Join(t.TempDir(), "adbkey"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := key.Public()
+	authd := func(value string) func(net.Conn) {
+		inner := fakeAdbd(value)
+		return func(c net.Conn) {
+			if m, err := adbRead(c); err != nil || m.cmd != adbCNXN {
+				return
+			}
+			token := make([]byte, 20)
+			rand.Read(token)
+			adbWrite(c, adbAUTH, adbAuthToken, 0, token)
+			m, err := adbRead(c)
+			if err != nil || m.cmd != adbAUTH || m.arg0 != adbAuthSignature ||
+				rsa.VerifyPKCS1v15(pub, crypto.SHA1, token, m.data) != nil {
+				adbWrite(c, adbAUTH, adbAuthToken, 0, token) // rejected: new challenge
+				return
+			}
+			inner(&replayConn{Conn: c, first: true})
+		}
+	}
+	ctx := context.Background()
+	if checkReadyWith(ctx, "adb", serve(t, authd("0\n")), key) {
+		t.Error("booting device counted as ready after auth")
+	}
+	if !checkReadyWith(ctx, "adb", serve(t, authd("1\n")), key) {
+		t.Error("booted device not ready after auth")
+	}
+}
+
+// replayConn feeds fakeAdbd a synthetic CNXN first (the real one was
+// consumed by the auth exchange).
+type replayConn struct {
+	net.Conn
+	first bool
+	buf   []byte
+}
+
+func (r *replayConn) Read(p []byte) (int, error) {
+	if r.first {
+		r.first = false
+		var b bytes.Buffer
+		adbWrite(&b, adbCNXN, 0x01000001, 256*1024, []byte("host::\x00"))
+		r.buf = b.Bytes()
+	}
+	if len(r.buf) > 0 {
+		n := copy(p, r.buf)
+		r.buf = r.buf[n:]
+		return n, nil
+	}
+	return r.Conn.Read(p)
+}
+
 // TB_ADB_ADDR=host:port go test -run TestRealADB ./internal/agent/ checks a
 // real adbd; TB_ADB_BOOTED is the expected result ("1" or "0").
 func TestRealADB(t *testing.T) {
@@ -98,7 +163,58 @@ func TestRealADB(t *testing.T) {
 		t.Skip("TB_ADB_ADDR not set")
 	}
 	want := os.Getenv("TB_ADB_BOOTED") == "1"
-	if got := checkReady(context.Background(), "adb", addr); got != want {
+	var key *adbkey.Key
+	if p := os.Getenv("TB_ADB_KEY"); p != "" {
+		var err error
+		if key, err = adbkey.LoadOrCreate(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := checkReadyWith(context.Background(), "adb", addr, key); got != want {
 		t.Fatalf("checkReady(adb, %s) = %v, want %v", addr, got, want)
+	}
+}
+
+// TB_ADB_ADDR=host:port TB_ADB_KEY=<key> TB_ADB_EXPECT=accepted|rejected|open
+// go test -run TestRealADBAuth ./internal/agent/ reports how a real adbd
+// treats the key: open (no auth required), accepted or rejected.
+func TestRealADBAuth(t *testing.T) {
+	addr, keyPath := os.Getenv("TB_ADB_ADDR"), os.Getenv("TB_ADB_KEY")
+	if addr == "" || keyPath == "" {
+		t.Skip("TB_ADB_ADDR / TB_ADB_KEY not set")
+	}
+	key, err := adbkey.LoadOrCreate(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	adbWrite(c, adbCNXN, 0x01000001, 256*1024, []byte("host::\x00"))
+	result := ""
+	signed := false
+	for result == "" {
+		m, err := adbRead(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case m.cmd == adbCNXN && !signed:
+			result = "open"
+		case m.cmd == adbCNXN:
+			result = "accepted"
+		case m.cmd == adbAUTH && signed:
+			result = "rejected"
+		case m.cmd == adbAUTH:
+			sig, _ := key.Sign(m.data)
+			adbWrite(c, adbAUTH, adbAuthSignature, 0, sig)
+			signed = true
+		}
+	}
+	t.Logf("adbd at %s: %s", addr, result)
+	if want := os.Getenv("TB_ADB_EXPECT"); want != "" && want != result {
+		t.Fatalf("got %s, want %s", result, want)
 	}
 }

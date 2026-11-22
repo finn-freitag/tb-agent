@@ -9,6 +9,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 )
 
 // defaultPorts are the internal service ports (tb-templates/docs/FORMAT.md).
@@ -16,6 +18,12 @@ var defaultPorts = map[string]int32{"ssh": 22, "rdp": 3389, "vnc": 5900, "adb": 
 
 // checkReady runs the template's readiness check against endpoint (host:port).
 func checkReady(ctx context.Context, kind, endpoint string) bool {
+	return checkReadyWith(ctx, kind, endpoint, nil)
+}
+
+// checkReadyWith is checkReady with the agent's adb key for devices that
+// require adb authentication.
+func checkReadyWith(ctx context.Context, kind, endpoint string, key *adbkey.Key) bool {
 	if kind == "" || kind == "none" {
 		return true
 	}
@@ -36,7 +44,7 @@ func checkReady(ctx context.Context, kind, endpoint string) bool {
 	case "rdp":
 		return rdpAnswers(c)
 	case "adb":
-		return adbBooted(c)
+		return adbBooted(c, key)
 	default:
 		return true // vnc, http(s): TCP connect is enough
 	}
@@ -109,22 +117,42 @@ func adbRead(r io.Reader) (adbMsg, error) {
 	return m, err
 }
 
+// adb AUTH packet types.
+const (
+	adbAuthToken     = 1
+	adbAuthSignature = 2
+)
+
 // adbBooted reports whether Android behind an adb endpoint finished booting
 // (sys.boot_completed=1). adbd starts early in boot and answers even when
-// the framework crash-loops, so a TCP connect is not enough. If adbd
-// requires authentication (or TLS) the boot state can't be queried and the
-// endpoint counts as ready.
-func adbBooted(c net.Conn) bool {
+// the framework crash-loops, so a TCP connect is not enough. When adbd
+// requires authentication, the agent signs the challenge with key (the
+// drivers install its public key). If that isn't possible (no key, key
+// rejected, TLS) the boot state can't be queried and the endpoint counts as
+// ready.
+func adbBooted(c net.Conn, key *adbkey.Key) bool {
 	if adbWrite(c, adbCNXN, 0x01000001, 256*1024, []byte("host::\x00")) != nil {
 		return false
 	}
+	signed := false
 	for {
 		m, err := adbRead(c)
 		if err != nil {
 			return false
 		}
-		if m.cmd == adbAUTH || m.cmd == adbSTLS {
+		if m.cmd == adbSTLS {
 			return true
+		}
+		if m.cmd == adbAUTH {
+			if m.arg0 != adbAuthToken || key == nil || signed {
+				return true
+			}
+			sig, err := key.Sign(m.data)
+			if err != nil || adbWrite(c, adbAUTH, adbAuthSignature, 0, sig) != nil {
+				return false
+			}
+			signed = true
+			continue
 		}
 		if m.cmd == adbCNXN {
 			break

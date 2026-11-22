@@ -33,16 +33,18 @@ func (l *listener) getTarget() string {
 
 // Forwarder is a userspace TCP port forwarder (public_port -> device endpoint).
 type Forwarder struct {
-	addr string
-	log  *slog.Logger
+	addr    string
+	log     *slog.Logger
+	sources *SourceFilter // nil = allow all
 
 	mu sync.Mutex
 	ls map[int32]*listener
 }
 
 // NewForwarder creates a forwarder binding on addr (e.g. "0.0.0.0").
-func NewForwarder(addr string, log *slog.Logger) *Forwarder {
-	return &Forwarder{addr: addr, log: log, ls: map[int32]*listener{}}
+// sources restricts who may connect (nil = everyone).
+func NewForwarder(addr string, sources *SourceFilter, log *slog.Logger) *Forwarder {
+	return &Forwarder{addr: addr, sources: sources, log: log, ls: map[int32]*listener{}}
 }
 
 // Sync makes the device's listeners match rules exactly.
@@ -128,6 +130,9 @@ func (f *Forwarder) serve(l *listener) {
 
 func (f *Forwarder) handle(l *listener, c net.Conn) {
 	defer c.Close()
+	if !f.sources.Allowed(c.RemoteAddr()) {
+		return
+	}
 	target := l.getTarget()
 	if target == "" {
 		return

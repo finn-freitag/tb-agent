@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 	"github.com/finn-freitag/tb-agent/internal/dockerapi"
 	"github.com/finn-freitag/tb-agent/internal/driver"
 	agentv1 "github.com/finn-freitag/tb-proto/gen/agent/v1"
@@ -72,11 +73,36 @@ func TestRedroidContainerConfig(t *testing.T) {
 type fakeDocker struct {
 	mu         sync.Mutex
 	containers map[string]*dockerapi.ContainerInfo
+	networks   map[string]map[string]string // created networks -> options
 }
 
 func (f *fakeDocker) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ping", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("GET /networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.networks[r.PathValue("name")]; !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("POST /networks/create", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name    string
+			Options map[string]string
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		if f.networks == nil {
+			f.networks = map[string]map[string]string{}
+		}
+		f.networks[body.Name] = body.Options
+		f.mu.Unlock()
+		w.WriteHeader(201)
+		w.Write([]byte(`{"Id":"n1"}`))
+	})
 	mux.HandleFunc("GET /images/{ref...}", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) })
 	mux.HandleFunc("POST /containers/create", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -134,7 +160,11 @@ func TestRedroidLifecycle(t *testing.T) {
 	fd := &fakeDocker{containers: map[string]*dockerapi.ContainerInfo{}}
 	srv := httptest.NewServer(fd.handler())
 	defer srv.Close()
-	d, err := New(driver.Env{DataDir: t.TempDir()}, Config{})
+	userKey, err := adbkey.LoadOrCreate(filepath.Join(t.TempDir(), "user"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(driver.Env{DataDir: t.TempDir(), ADBPublicKey: "AGENTKEY tossbox-agent@n1"}, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +180,17 @@ func TestRedroidLifecycle(t *testing.T) {
 		t.Fatalf("%+v", caps)
 	}
 	report := func(agentv1.DeviceState, string) {}
-	if err := d.Ensure(ctx, spec("redroid"), report); err != nil {
+	first := spec("redroid")
+	first.AdbAuthorizedKeys = []string{userKey.PublicKey("me@laptop"), "not-a-key"}
+	if err := d.Ensure(ctx, first, report); err != nil {
 		t.Fatal(err)
+	}
+	keys, err := os.ReadFile(filepath.Join(r.dataDir("a1"), "misc", "adb", "adb_keys"))
+	if err != nil || string(keys) != userKey.PublicKey("me@laptop")+"\nAGENTKEY tossbox-agent@n1\n" {
+		t.Fatalf("adb_keys = %q, %v", keys, err)
+	}
+	if !slices.Contains(r.containerConfig(first).Cmd, "ro.adb.secure=1") {
+		t.Error("adb auth not enabled")
 	}
 	st, _ := d.Status(ctx, "a1")
 	if st.State != agentv1.DeviceState_DEVICE_STATE_RUNNING || st.InternalIp != "172.17.0.20" {

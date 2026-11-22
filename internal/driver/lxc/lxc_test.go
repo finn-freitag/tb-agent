@@ -114,6 +114,12 @@ func (f *fakeIncus) handler(t *testing.T) http.Handler {
 	mux.HandleFunc("GET /1.0/operations/op1/wait", func(w http.ResponseWriter, r *http.Request) {
 		sync200(w, map[string]any{"status": "Success", "status_code": 200})
 	})
+	mux.HandleFunc("GET /1.0/profiles/{name}", func(w http.ResponseWriter, r *http.Request) {
+		sync200(w, map[string]any{"devices": map[string]any{
+			"eth0": map[string]string{"type": "nic", "network": "incusbr0", "name": "eth0"},
+			"root": map[string]string{"type": "disk", "path": "/", "pool": "default"},
+		}})
+	})
 	mux.HandleFunc("POST /1.0/instances", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -218,6 +224,9 @@ func TestLifecycle(t *testing.T) {
 	if err := d.Ensure(ctx, spec(), report); err != nil {
 		t.Fatal(err)
 	}
+	if fi.created.Devices["eth0"]["security.port_isolation"] != "true" || fi.created.Devices["eth0"]["network"] != "incusbr0" {
+		t.Errorf("NIC not isolated: %v", fi.created.Devices)
+	}
 	st, err := d.Status(ctx, "d1")
 	if err != nil || st.State != agentv1.DeviceState_DEVICE_STATE_RUNNING || st.InternalIp != "10.10.10.5" || st.StorageUsedMb != 300 {
 		t.Fatalf("%+v %v", st, err)
@@ -253,5 +262,16 @@ func TestLifecycle(t *testing.T) {
 	bad := New(driver.Env{}, Config{Socket: filepath.Join(t.TempDir(), "nope.sock")})
 	if c := bad.Capabilities(ctx); c.Healthy || c.Message == "" {
 		t.Fatal("expected unhealthy")
+	}
+}
+
+func TestIsolatedNICs(t *testing.T) {
+	got := isolatedNICs([]map[string]map[string]string{
+		{"eth0": {"type": "nic", "network": "incusbr0", "name": "eth0"}, "root": {"type": "disk", "path": "/"}},
+		{"eth1": {"type": "nic", "nictype": "macvlan", "parent": "eno1"}, "eth2": {"type": "nic", "nictype": "bridged", "parent": "br0"}},
+	})
+	if len(got) != 2 || got["eth0"]["security.port_isolation"] != "true" || got["eth0"]["network"] != "incusbr0" ||
+		got["eth2"]["security.port_isolation"] != "true" {
+		t.Fatalf("%v", got)
 	}
 }

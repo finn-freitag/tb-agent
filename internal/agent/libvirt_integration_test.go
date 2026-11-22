@@ -52,7 +52,7 @@ func TestLibvirtDebian(t *testing.T) {
 	if c := drv.Capabilities(context.Background()); !c.Healthy {
 		t.Fatalf("driver unhealthy: %s", c.Message)
 	}
-	fwd := NewForwarder("127.0.0.1", log)
+	fwd := NewForwarder("127.0.0.1", nil, log)
 	m := NewManager(log, map[string]driver.Driver{"libvirt": drv}, lic, newStore(t.TempDir()), fwd)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

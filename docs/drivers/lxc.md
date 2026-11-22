@@ -6,6 +6,8 @@ Status: tested against Incus 6.0.5 on Ubuntu 26.04 (Debian 13 and Alpine 3.24 cl
 
 **Storage limit:** the root disk `size` is only enforced by storage pools that support quotas (zfs, btrfs, lvm). On a `dir` pool (what `incus admin init --minimal` creates) the container sees the whole host filesystem.
 
+**Network isolation:** see `isolate_ports` below and `deploy/host-isolation.sh`.
+
 **Nesting:** Ubuntu 24.04+ hosts set `kernel.apparmor_restrict_unprivileged_userns=1`. systemd 257+ inside a container then hangs at boot (services stuck in `(sd-mkuserns)`, no DHCP lease) unless `security.nesting=true`. The driver therefore sets it on every container by default; override it via `container_config`.
 
 ## Config
@@ -23,7 +25,10 @@ drivers:
     stop_timeout: 30s
     container_config:             # extra Incus config for every container
       security.nesting: "true"    # default; needed by systemd 257+ on Ubuntu hosts
+    isolate_ports: true           # default; devices can't reach each other
 ```
+
+**Isolation:** with `isolate_ports` (default), the driver copies the profiles' bridged NICs onto each instance with `security.port_isolation=true`. Devices on `incusbr0` then reach the host and the internet, but not each other (tested on Incus 6.0.5). macvlan or physical NICs can't be isolated this way and are left to the profile.
 
 The agent needs access to the Incus socket (member of the `incus-admin` group, or mount the socket when running in a container).
 

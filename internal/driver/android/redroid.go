@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 	"github.com/finn-freitag/tb-agent/internal/dockerapi"
 	"github.com/finn-freitag/tb-agent/internal/driver"
 	agentv1 "github.com/finn-freitag/tb-proto/gen/agent/v1"
@@ -31,6 +32,10 @@ type RedroidConfig struct {
 	GPUMode     string `yaml:"gpu_mode"`
 	// UseMemfd passes androidboot.use_memfd=true (no ashmem module needed). Default true.
 	UseMemfd *bool `yaml:"use_memfd"`
+	// ADBAuth requires adb authentication (ro.adb.secure=1): only the owner's
+	// adb keys (and the agent's own key for readiness checks) may connect.
+	// Default true.
+	ADBAuth *bool `yaml:"adb_auth"`
 }
 
 type redroid struct {
@@ -45,7 +50,7 @@ type redroid struct {
 
 func newRedroid(env driver.Env, cfg RedroidConfig) *redroid {
 	if cfg.Network == "" {
-		cfg.Network = "bridge"
+		cfg.Network = dockerapi.DeviceNetwork
 	}
 	if cfg.Image == "" {
 		cfg.Image = "redroid/redroid:15.0.0_64only-latest"
@@ -68,6 +73,10 @@ func newRedroid(env driver.Env, cfg RedroidConfig) *redroid {
 	if cfg.UseMemfd == nil {
 		t := true
 		cfg.UseMemfd = &t
+	}
+	if cfg.ADBAuth == nil {
+		t := true
+		cfg.ADBAuth = &t
 	}
 	return &redroid{cfg: cfg, env: env, docker: dockerapi.New(cfg.Socket), binderCheck: checkBinder, ashmemCheck: hasAshmem}
 }
@@ -138,6 +147,9 @@ func (r *redroid) containerConfig(spec *agentv1.DeviceSpec) dockerapi.ContainerC
 	if *r.cfg.UseMemfd {
 		cmd = append(cmd, "androidboot.use_memfd=true")
 	}
+	if *r.cfg.ADBAuth {
+		cmd = append(cmd, "ro.adb.secure=1")
+	}
 	res := spec.GetResources()
 	hc := dockerapi.HostConfig{
 		Privileged:    true,
@@ -193,6 +205,9 @@ func (r *redroid) ensure(ctx context.Context, spec *agentv1.DeviceSpec, report d
 			}
 		}
 		report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating Android container")
+		if err := r.docker.EnsureNetwork(ctx, r.cfg.Network); err != nil {
+			return fmt.Errorf("network %s: %w", r.cfg.Network, err)
+		}
 		if _, err := r.docker.CreateContainer(ctx, cname, cfg); err != nil {
 			return err
 		}
@@ -209,6 +224,9 @@ func (r *redroid) ensure(ctx context.Context, spec *agentv1.DeviceSpec, report d
 		return nil
 	}
 	if !ci.State.Running {
+		if err := r.writeADBKeys(spec); err != nil {
+			return fmt.Errorf("adb keys: %w", err)
+		}
 		report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Booting Android")
 		return r.docker.StartContainer(ctx, ci.ID)
 	}
@@ -274,4 +292,47 @@ func orInt(s string, def int) int {
 		return v
 	}
 	return def
+}
+
+// Android IDs for /data/misc/adb (system:shell).
+const (
+	aidSystem = 1000
+	aidShell  = 2000
+	aidMisc   = 9998
+)
+
+// writeADBKeys writes /data/misc/adb/adb_keys into the device's data
+// directory before Android boots: the owner's adb keys plus the agent's key.
+// Ownership follows Android (init fixes the directory modes on boot anyway);
+// chown only works when the agent runs as root, so failures are ignored and
+// the key file is world readable (it holds public keys only).
+func (r *redroid) writeADBKeys(spec *agentv1.DeviceSpec) error {
+	if !*r.cfg.ADBAuth {
+		return nil
+	}
+	var lines []string
+	for _, k := range spec.GetAdbAuthorizedKeys() {
+		if norm, err := adbkey.Parse(k); err == nil {
+			lines = append(lines, norm)
+		} else if r.env.Log != nil {
+			r.env.Log.Warn("ignoring invalid adb key", "device", spec.DeviceId, "err", err)
+		}
+	}
+	if r.env.ADBPublicKey != "" {
+		lines = append(lines, r.env.ADBPublicKey)
+	}
+	misc := filepath.Join(r.dataDir(spec.DeviceId), "misc")
+	dir := filepath.Join(misc, "adb")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, "adb_keys")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	_ = os.Chown(misc, aidSystem, aidMisc)
+	_ = os.Chown(dir, aidSystem, aidShell)
+	_ = os.Chown(tmp, aidSystem, aidShell)
+	return os.Rename(tmp, path)
 }

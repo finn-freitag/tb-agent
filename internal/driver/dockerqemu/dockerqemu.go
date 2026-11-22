@@ -2,7 +2,9 @@
 // per VM, running QEMU inside the container (dockur/windows for Windows,
 // qemux/qemu for Linux and other disk images).
 //
-// Networking: the containers use Docker's bridge (or a configured network).
+// Networking: the containers use the "tossbox" network (created by the
+// agent with inter-container communication disabled, so devices can't reach
+// each other) or a configured network.
 // Both images NAT the guest behind the container IP and forward every port
 // except their own web/VNC ports to the guest, so the agent core can reach the
 // guest's services at <container IP>:<internal port>. VNC (5900) reaches
@@ -41,7 +43,7 @@ const (
 //	drivers:
 //	  docker-qemu:
 //	    socket: /var/run/docker.sock
-//	    network: bridge
+//	    network: tossbox        # created with ICC off; "bridge" = Docker's default network
 //	    storage_dir: /var/lib/tb-agent/docker-qemu   # per device storage, bind mounted to /storage
 //	    host_storage_dir: ""                          # same dir as seen by the Docker daemon (if the agent runs in a container with a different mount path)
 //	    prepared_dir: /var/lib/tb-agent/prepared      # prepared dockur storage snapshots ("prepared_storage" template param)
@@ -66,7 +68,7 @@ func (c *Config) defaults(env driver.Env) {
 		c.Socket = dockerapi.DefaultSocket
 	}
 	if c.Network == "" {
-		c.Network = "bridge"
+		c.Network = dockerapi.DeviceNetwork
 	}
 	if c.StorageDir == "" {
 		c.StorageDir = filepath.Join(env.DataDir, "devices")
@@ -392,6 +394,9 @@ func (d *Driver) create(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 	}
 
 	report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating container")
+	if err := d.docker.EnsureNetwork(ctx, d.cfg.Network); err != nil {
+		return fmt.Errorf("network %s: %w", d.cfg.Network, err)
+	}
 	if _, err := d.docker.CreateContainer(ctx, driver.DomainName(id), p.Config); err != nil {
 		return err
 	}

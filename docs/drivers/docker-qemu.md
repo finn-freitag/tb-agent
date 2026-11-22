@@ -19,7 +19,7 @@ Status: tested on a real Docker 29 host (Ubuntu 26.04): Debian, Fedora and Windo
 drivers:
   docker-qemu:
     socket: /var/run/docker.sock
-    network: bridge                 # the device's internal IP is the container IP on this network
+    network: tossbox                # the device's internal IP is the container IP on this network
     storage_dir: /var/lib/tb-agent/docker-qemu/devices
     host_storage_dir: ""            # storage_dir as seen by the Docker daemon
     prepared_dir: /var/lib/tb-agent/docker-qemu/prepared
@@ -42,6 +42,8 @@ drivers:
 | `ssh` service on Windows | `COMMAND` installs and starts the OpenSSH server at the end of the install |
 | per device storage | `<storage_dir>/<id>/storage` bind mounted to `/storage` |
 | labels | `tossbox.device=<id>`, `tossbox.driver=docker-qemu`, `tossbox.template` |
+
+**Network:** by default the containers join the Docker network `tossbox`. The agent creates it if missing, with inter-container communication off (`com.docker.network.bridge.enable_icc=false`), so devices can't reach each other. The host, and therefore the agent's forwarder and readiness checks, still reaches them. Its Linux bridge is named `tb-docker`, which `deploy/host-isolation.sh` uses. Docker's predefined networks (e.g. `bridge`) are used as they are, without isolation.
 
 Both images NAT the guest behind the container IP and forward every port except their own web (8006) and VNC (5900) ports. The agent core reaches `rdp` / `ssh` / `http(s)` at `<container IP>:<internal port>`. `vnc` (5900) reaches QEMU's display server in the container, so it works even before the guest has networking.
 

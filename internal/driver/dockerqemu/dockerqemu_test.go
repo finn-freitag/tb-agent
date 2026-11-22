@@ -135,12 +135,37 @@ func TestPlanLinux(t *testing.T) {
 type fakeDocker struct {
 	mu         sync.Mutex
 	containers map[string]*dockerapi.ContainerInfo
+	networks   map[string]map[string]string // created networks -> options
 	created    dockerapi.ContainerConfig
 }
 
 func (f *fakeDocker) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /_ping", func(w http.ResponseWriter, r *http.Request) {})
+	mux.HandleFunc("GET /networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if _, ok := f.networks[r.PathValue("name")]; !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Write([]byte(`{}`))
+	})
+	mux.HandleFunc("POST /networks/create", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Name    string
+			Options map[string]string
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		if f.networks == nil {
+			f.networks = map[string]map[string]string{}
+		}
+		f.networks[body.Name] = body.Options
+		f.mu.Unlock()
+		w.WriteHeader(201)
+		w.Write([]byte(`{"Id":"n1"}`))
+	})
 	mux.HandleFunc("GET /images/{ref...}", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) })
 	mux.HandleFunc("POST /images/create", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"status":"ok"}` + "\n")) })
 	mux.HandleFunc("POST /containers/create", func(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +250,9 @@ func TestLifecycle(t *testing.T) {
 	report := func(agentv1.DeviceState, string) {}
 	if err := d.Ensure(ctx, winSpec(), report); err != nil {
 		t.Fatal(err)
+	}
+	if fd.networks["tossbox"]["com.docker.network.bridge.enable_icc"] != "false" || fd.networks["tossbox"]["com.docker.network.bridge.name"] != "tb-docker" {
+		t.Errorf("device network not isolated: %v", fd.networks)
 	}
 	if envOf(fd.created.Env, "KEY") != "AAAAA-BBBBB" {
 		t.Error("license key not passed", fd.created.Env)

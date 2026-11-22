@@ -390,3 +390,43 @@ func (c *Client) RemoveVolume(ctx context.Context, name string) error {
 	}
 	return err
 }
+
+// ---------------------------------------------------------------- networks
+
+// DeviceNetwork is the default network for device containers.
+const DeviceNetwork = "tossbox"
+
+// DeviceBridge is the Linux bridge name of DeviceNetwork, stable so host
+// firewall rules can refer to it.
+const DeviceBridge = "tb-docker"
+
+// EnsureNetwork creates the bridge network name if it doesn't exist. Created
+// networks have inter-container communication disabled, so devices can't
+// reach each other (the host, and thus the agent, still reaches them).
+// Docker's predefined networks are used as they are.
+func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
+	switch name {
+	case "", "bridge", "host", "none", "default":
+		return nil
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/networks/"+url.PathEscape(name), nil, nil, nil)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	opts := map[string]string{"com.docker.network.bridge.enable_icc": "false"}
+	if name == DeviceNetwork {
+		opts["com.docker.network.bridge.name"] = DeviceBridge
+	}
+	err = c.doJSON(ctx, http.MethodPost, "/networks/create", nil, map[string]any{
+		"Name": name, "Driver": "bridge", "Options": opts,
+		"Labels": map[string]string{"tossbox.managed": "true"},
+	}, nil)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusConflict {
+		return nil // created concurrently
+	}
+	return err
+}

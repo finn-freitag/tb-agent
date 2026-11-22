@@ -192,6 +192,18 @@ func (c *incusClient) get(ctx context.Context, name string) (*instance, error) {
 	return &in, json.Unmarshal(r.Metadata, &in)
 }
 
+// profileDevices returns the devices of a profile.
+func (c *incusClient) profileDevices(ctx context.Context, name string) (map[string]map[string]string, error) {
+	r, err := c.do(ctx, http.MethodGet, "/1.0/profiles/"+url.PathEscape(name), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var p struct {
+		Devices map[string]map[string]string `json:"devices"`
+	}
+	return p.Devices, json.Unmarshal(r.Metadata, &p)
+}
+
 func (c *incusClient) list(ctx context.Context) ([]instance, error) {
 	r, err := c.do(ctx, http.MethodGet, "/1.0/instances", url.Values{"recursion": {"1"}}, nil)
 	if err != nil {

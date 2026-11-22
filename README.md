@@ -17,7 +17,7 @@ What the agent core does for every driver:
 - **Enrollment and control stream:** a one-time token is exchanged for an mTLS client certificate. Then a long-lived gRPC stream ([tb-proto](https://github.com/finn-freitag/tb-proto)) carries Hello, Welcome, ApplyDevice/DeleteDevice, DeviceStatus and heartbeats.
 - **Reconciler:** keeps the desired spec of every device, persisted in `data_dir/state.json`, so devices survive agent restarts and dashboard outages. Calls `Ensure`/`Destroy` and retries with backoff.
 - **Readiness checks:** SSH banner, or a TCP connect for RDP/ADB, against the device's internal address.
-- **Port forwarding:** a userspace TCP proxy from `listen_address:<public_port>` to the device's service. The dashboard gateway uses the same port number.
+- **Port forwarding:** a userspace TCP proxy from `listen_address:<public_port>` to the device's service. The dashboard gateway uses the same port number. Only sources in `allowed_sources` (default: the dashboard and private/Tailscale ranges) are forwarded, so the gateway's allowlists and rate limits can't be bypassed from the internet.
 - **License pools:** Windows product keys from the node config are leased to devices, persisted in `data_dir/licenses.json`. Keys never leave the node.
 - **Image cache:** `https://` images are downloaded once (resumable, sha256-verified) to `data_dir/images/cache`. `local:<file>` images are read from `data_dir/images/`.
 
@@ -90,7 +90,16 @@ Requirements on the host: libvirt with QEMU/KVM, a libvirt network (default `def
 
 **VNC:** each VM has a VNC console served by QEMU on the host (`vnc_listen`, default `127.0.0.1`, autoport). Its password is the device password truncated to 8 characters, which is a VNC protocol limitation. The driver implements the optional `ServiceEndpoint` extension, so the agent forwards the `vnc` service to that console rather than to the guest.
 
-**Networking:** the VM's IP comes from the libvirt network's DHCP leases, or the guest agent when using `bridge`. The agent forwards public ports to `<vm ip>:<internal port>`.
+**Networking:** the VM's IP comes from the libvirt network's DHCP leases, or the guest agent when using `bridge`. The agent forwards public ports to `<vm ip>:<internal port>`. Each VM's bridge port is isolated (`<port isolated='yes'/>`, `isolate_ports: true` by default), so VMs on the same network can't reach each other.
+
+## Device isolation
+
+Devices of different users share a node, so the agent keeps them apart:
+
+- **Device to device:** the Docker network `tossbox` has inter-container communication off, libvirt VMs get isolated bridge ports, and Incus NICs use `security.port_isolation`.
+- **Device to node and LAN:** [`deploy/host-isolation.sh`](deploy/host-isolation.sh) adds firewall rules (run once as root, `install` also sets up a systemd unit). Devices then only reach the internet, plus DHCP/DNS on the node. Otherwise a device could reach every service on the node's LAN, e.g. a router or Home Assistant.
+- **Inbound:** forwarded device ports only accept the dashboard and private networks (`allowed_sources`).
+- **adb:** redroid devices require adb authentication with the owner's keys (see `docs/drivers/android.md`).
 
 ## Development
 

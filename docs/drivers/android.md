@@ -18,7 +18,7 @@ drivers:
     redroid:
       enabled: true
       socket: /var/run/docker.sock
-      network: bridge
+      network: tossbox           # created with ICC off (devices can't reach each other)
       image: redroid/redroid:15.0.0_64only-latest   # used if the template has no docker:// image
       data_dir: /var/lib/tb-agent/android/redroid    # per device /data
       host_data_dir: ""
@@ -27,6 +27,7 @@ drivers:
       dpi: 320
       gpu_mode: guest            # guest (software) | host | auto
       use_memfd: true            # androidboot.use_memfd=true: no ashmem module needed
+      adb_auth: true             # ro.adb.secure=1: only the owner's adb keys can connect
     cuttlefish:
       enabled: false
       host_package_dir: /opt/cuttlefish/host   # extracted cvd-host_package.tar.gz
@@ -48,14 +49,15 @@ If neither backend is enabled explicitly, redroid is enabled. Only healthy backe
   The driver reports itself unhealthy if `/proc/filesystems` has no binder and `/dev/binder` is missing.
   - ashmem: the redroid **16** image still needs it for graphics buffers (SurfaceFlinger aborts with `couldn't create ashmem` / `output buffer not gpu writeable`). Templates mark this with `redroid.requires_ashmem: "true"`; the driver then refuses to create the device unless `/proc/misc` lists `ashmem`. Linux removed ashmem in 5.18, so on current kernels use redroid 15.
 - **GPU:** `gpu_mode: guest` renders in software on the CPU (fine for apps, slow for games). `gpu_mode: host` uses the host GPU through `/dev/dri` (the container is privileged, so it sees it); tested with an Intel UHD 730 (Mesa, OpenGL ES 3.2). The mode is fixed when the container is created.
-- **Readiness:** `adb` readiness queries `sys.boot_completed` over the adb protocol, so a device whose framework crash-loops never turns ready.
+- **Readiness:** `adb` readiness queries `sys.boot_completed` over the adb protocol, so a device whose framework crash-loops never turns ready. With adb authentication, the agent signs the challenge with its own key (`<data_dir>/adbkey`).
+- **adb authentication** (`adb_auth`, default on, tested with redroid 15): the container boots with `ro.adb.secure=1`. Before each start, the driver writes `/data/misc/adb/adb_keys` into the device's data directory. It holds the owner's adb keys (**Profile → ADB keys** in the dashboard, the content of `~/.android/adbkey.pub`) plus the agent's key. Other clients are rejected. Keys are copied when the device is created.
 - **Container:** name `tb-<id>`, labels `tossbox.device`, `tossbox.driver=android`, `tossbox.android-backend=redroid`.
   - `/data` is bind mounted from `<data_dir>/<id>`.
   - Command line: `androidboot.redroid_width/height/dpi/gpu_mode`, plus `androidboot.use_memfd=true`.
   - Template params `redroid.width`, `redroid.height`, `redroid.dpi` override the config.
   - Memory limit = ram_mb. CPU = vcpus, or the cap % of host cores.
 - **Access:** adb on `<container IP>:5555`. redroid has no VNC; use scrcpy over adb.
-- **Warning:** adb has no authentication. Expose it publicly only for throwaway devices, and prefer the `tailscale` or `none` exposure.
+- **Warning:** `adb root` works on redroid images, and the container is privileged, so whoever has adb access effectively has root on the node. Keep `adb_auth` on. The dashboard also refuses public ADB exposure unless an admin enables **Allow public ADB**. Prefer the `tailscale` or `none` exposure, keep `allowed_sources` tight, and use dedicated nodes for Android if other users get devices.
 
 ## Cuttlefish
 

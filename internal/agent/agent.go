@@ -13,6 +13,7 @@ import (
 	agentv1 "github.com/finn-freitag/tb-proto/gen/agent/v1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/finn-freitag/tb-agent/internal/adbkey"
 	"github.com/finn-freitag/tb-agent/internal/config"
 	"github.com/finn-freitag/tb-agent/internal/driver"
 	"github.com/finn-freitag/tb-agent/internal/hostinfo"
@@ -29,6 +30,7 @@ type Agent struct {
 	images   *images.Store
 	mgr      *Manager
 	fwd      *Forwarder
+	sources  *SourceFilter
 }
 
 // New builds the agent and instantiates all enabled drivers.
@@ -44,6 +46,10 @@ func New(cfg *config.Config, log *slog.Logger) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	adbKey, err := adbkey.LoadOrCreate(filepath.Join(cfg.DataDir, "adbkey"))
+	if err != nil {
+		return nil, fmt.Errorf("agent: adb key: %w", err)
+	}
 	a := &Agent{cfg: cfg, log: log, drivers: map[string]driver.Driver{}, licenses: lic, images: img}
 	for _, name := range cfg.DriverNames() {
 		dir := filepath.Join(cfg.DataDir, "drivers", name)
@@ -56,14 +62,18 @@ func New(cfg *config.Config, log *slog.Logger) (*Agent, error) {
 			Images:   img,
 			Licenses: lic,
 			Log:      log.With("driver", name),
+
+			ADBPublicKey: adbKey.PublicKey("tossbox-agent@" + cfg.Name),
 		}, cfg.DriverConfig(name))
 		if err != nil {
 			return nil, fmt.Errorf("agent: driver %s: %w", name, err)
 		}
 		a.drivers[name] = drv
 	}
-	a.fwd = NewForwarder(cfg.ListenAddress, log.With("component", "forward"))
+	a.sources = NewSourceFilter(cfg.AllowedSources, cfg.Dashboard.Endpoint, log.With("component", "forward"))
+	a.fwd = NewForwarder(cfg.ListenAddress, a.sources, log.With("component", "forward"))
 	a.mgr = NewManager(log.With("component", "reconciler"), a.drivers, lic, newStore(cfg.DataDir), a.fwd)
+	a.mgr.adbKey = adbKey
 	return a, nil
 }
 
@@ -75,6 +85,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.mgr.Start(ctx); err != nil {
 		return err
 	}
+	go a.sources.Run(ctx)
 	a.runClient(ctx)
 	return nil
 }
