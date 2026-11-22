@@ -46,6 +46,8 @@ If neither backend is enabled explicitly, redroid is enabled. Only healthy backe
   - the container runs `--privileged`
 
   The driver reports itself unhealthy if `/proc/filesystems` has no binder and `/dev/binder` is missing.
+  - ashmem: the redroid **16** image still needs it for graphics buffers (SurfaceFlinger aborts with `couldn't create ashmem` / `output buffer not gpu writeable`). Templates mark this with `redroid.requires_ashmem: "true"`; the driver then refuses to create the device unless `/proc/misc` lists `ashmem`. Linux removed ashmem in 5.18, so on current kernels use redroid 15.
+- **Readiness:** `adb` readiness queries `sys.boot_completed` over the adb protocol, so a device whose framework crash-loops never turns ready.
 - **Container:** name `tb-<id>`, labels `tossbox.device`, `tossbox.driver=android`, `tossbox.android-backend=redroid`.
   - `/data` is bind mounted from `<data_dir>/<id>`.
   - Command line: `androidboot.redroid_width/height/dpi/gpu_mode`, plus `androidboot.use_memfd=true`.
