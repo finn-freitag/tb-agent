@@ -261,7 +261,7 @@ func offlineNetworkXML(name, subnet string) (string, error) {
 func (d *Driver) ensureOfflineNetwork(lv *golibvirt.Libvirt) error {
 	net, err := lv.NetworkLookupByName(d.cfg.OfflineNetwork)
 	if err != nil {
-		if !golibvirt.IsNotFound(err) {
+		if !isNoNetwork(err) {
 			return err
 		}
 		xml, err := offlineNetworkXML(d.cfg.OfflineNetwork, d.cfg.OfflineSubnet)
@@ -280,6 +280,12 @@ func (d *Driver) ensureOfflineNetwork(lv *golibvirt.Libvirt) error {
 	}
 	_ = lv.NetworkSetAutostart(net, 1)
 	return nil
+}
+
+// isNoNetwork: golibvirt.IsNotFound only matches missing domains.
+func isNoNetwork(err error) bool {
+	var e golibvirt.Error
+	return errors.As(err, &e) && e.Code == uint32(golibvirt.ErrNoNetwork)
 }
 
 func isNoVol(err error) bool {

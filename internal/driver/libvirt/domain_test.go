@@ -2,6 +2,7 @@ package libvirt
 
 import (
 	"encoding/xml"
+	golibvirt "github.com/digitalocean/go-libvirt"
 	"strings"
 	"testing"
 )
@@ -62,5 +63,11 @@ func TestOfflineNetworkXML(t *testing.T) {
 	}
 	if _, err := offlineNetworkXML("x", "10.0.0.0/16"); err == nil {
 		t.Fatal("non-/24 subnet accepted")
+	}
+}
+
+func TestIsNoNetwork(t *testing.T) {
+	if !isNoNetwork(golibvirt.Error{Code: uint32(golibvirt.ErrNoNetwork)}) || isNoNetwork(golibvirt.Error{Code: uint32(golibvirt.ErrNoDomain)}) {
+		t.Fatal("isNoNetwork")
 	}
 }
