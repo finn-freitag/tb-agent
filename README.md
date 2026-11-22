@@ -102,6 +102,8 @@ Devices of different users share a node, so the agent keeps them apart:
 - **adb:** redroid devices require adb authentication with the owner's keys (see `docs/drivers/android.md`).
 
 - **Network policy per device:** `internet` (default; with `deploy/host-isolation.sh` private networks are blocked) or `offline`. Offline devices sit on separate networks without any forwarding: the Docker network `tossbox-offline` (internal), the libvirt network `tossbox-offline` (no `<forward>`, no DNS) and the Incus bridge `tb-incus-off` (no NAT). They have no internet and no DNS, but users still reach them through their forwarded services and Guacamole, because those connections start on the node. Supported by docker-qemu, android (redroid), browser, libvirt (network mode) and lxc.
+  - lxc containers provision online first: they boot on the normal network until cloud-init has finished (the `images:` cloud variants install the SSH server on first boot), then the agent moves them to `tb-incus-off` and restarts them (`offline_provision_timeout`, default 15m).
+  - VMs and the other containers are offline from the first boot: templates that install packages on first boot (`cloudinit.packages`, desktop templates) can't finish there.
 
 ## GPU sharing
 
@@ -109,7 +111,7 @@ Devices can ask for a GPU (`gpu: true` in the API, "Share the node's GPU" in the
 
 | Driver | Mode | How |
 |---|---|---|
-| libvirt | `virgl` | `drivers.libvirt.gpu: virgl`: shared paravirtual 3D (virtio-gpu with VirGL on the node's render node). Linux and ChromeOS guests, unlimited devices. Needs the EGL libraries on the host: `sudo sh deploy/host-gpu.sh virgl` |
+| libvirt | `virgl` | `drivers.libvirt.gpu: virgl`: shared paravirtual 3D (virtio-gpu with VirGL on the node's render node), unlimited devices. Needs the EGL libraries on the host (`sudo sh deploy/host-gpu.sh virgl`) and a guest kernel with virtio-gpu (Debian generic, Ubuntu, Fedora; not Debian `genericcloud`). Tested: OpenGL 4.3 "virgl (Intel UHD 730)" in a Debian guest. ChromeOS shows a garbled VNC picture with VirGL, so its templates don't use it by default |
 | libvirt | `sriov` | `drivers.libvirt.gpu: sriov` + `gpu.sriov.pf`: each device gets its own SR-IOV virtual function (PCI passthrough), so as many devices as VFs. Intel iGPUs need the xe driver in SR-IOV mode: `sudo sh deploy/host-gpu.sh sriov 7` (reboot; experimental, `revert` undoes it) |
 | docker-qemu | `render` | qemux renders the guest's virtio-gpu with VirGL (`GPU=Y`, `/dev/dri`); Linux guests |
 | android (redroid) | `render` | the device renders on the host GPU (`androidboot.redroid_gpu_mode=host`) |

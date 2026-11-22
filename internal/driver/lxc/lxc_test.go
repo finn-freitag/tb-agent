@@ -92,6 +92,9 @@ type fakeIncus struct {
 	instances map[string]*instance
 	created   instancesPost
 	ops       int
+	networks  map[string]bool
+	patched   map[string]map[string]string // devices of the last PATCH
+	restarts  int
 }
 
 func (f *fakeIncus) async(w http.ResponseWriter) {
@@ -119,6 +122,45 @@ func (f *fakeIncus) handler(t *testing.T) http.Handler {
 			"eth0": map[string]string{"type": "nic", "network": "incusbr0", "name": "eth0"},
 			"root": map[string]string{"type": "disk", "path": "/", "pool": "default"},
 		}})
+	})
+	mux.HandleFunc("GET /1.0/networks/{name}", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if !f.networks[r.PathValue("name")] {
+			notFound(w)
+			return
+		}
+		sync200(w, map[string]any{})
+	})
+	mux.HandleFunc("POST /1.0/networks", func(w http.ResponseWriter, r *http.Request) {
+		var b struct{ Name string }
+		json.NewDecoder(r.Body).Decode(&b)
+		f.mu.Lock()
+		if f.networks == nil {
+			f.networks = map[string]bool{}
+		}
+		f.networks[b.Name] = true
+		f.mu.Unlock()
+		sync200(w, nil)
+	})
+	mux.HandleFunc("GET /1.0/instances/{name}/files", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("path") == "/run/cloud-init/result.json" {
+			w.Write([]byte("{}"))
+			return
+		}
+		notFound(w)
+	})
+	mux.HandleFunc("PATCH /1.0/instances/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var b struct {
+			Config  map[string]string
+			Devices map[string]map[string]string
+		}
+		json.NewDecoder(r.Body).Decode(&b)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		in := f.instances[r.PathValue("name")]
+		in.Config, in.Devices, f.patched = b.Config, b.Devices, b.Devices
+		f.async(w)
 	})
 	mux.HandleFunc("POST /1.0/instances", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
@@ -182,6 +224,8 @@ func (f *fakeIncus) handler(t *testing.T) http.Handler {
 			in.Status = "Running"
 		case "stop":
 			in.Status = "Stopped"
+		case "restart":
+			f.restarts++
 		}
 		f.async(w)
 	})
@@ -283,5 +327,39 @@ func TestOfflineNICs(t *testing.T) {
 	}
 	if got := offlineNICs(nil, "x"); got["eth0"]["network"] != "x" {
 		t.Fatalf("default NIC missing: %v", got)
+	}
+}
+
+func TestOfflineProvisionsOnlineFirst(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "incus.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Skip(err)
+	}
+	fi := &fakeIncus{instances: map[string]*instance{}}
+	srv := &httptest.Server{Listener: ln, Config: &http.Server{Handler: fi.handler(t)}}
+	srv.Start()
+	defer srv.Close()
+	d := New(driver.Env{}, Config{Socket: sock})
+	s := spec()
+	s.NetworkPolicy = "offline"
+	if err := d.Ensure(context.Background(), s, func(agentv1.DeviceState, string) {}); err != nil {
+		t.Fatal(err)
+	}
+	// Created on the internet network, marked pending ...
+	if fi.created.Devices["eth0"]["network"] != "incusbr0" || fi.created.Config[keyOffline] != "pending" {
+		t.Fatalf("created: %v %v", fi.created.Devices, fi.created.Config)
+	}
+	// ... then moved to the offline network and restarted.
+	if fi.patched["eth0"]["network"] != "tb-incus-off" || fi.patched["eth0"]["security.port_isolation"] != "true" || !fi.networks["tb-incus-off"] || fi.restarts != 1 {
+		t.Fatalf("not switched offline: %v networks=%v restarts=%d", fi.patched, fi.networks, fi.restarts)
+	}
+	in := fi.instances[driver.DomainName("d1")]
+	if in.Config[keyOffline] != "done" {
+		t.Fatalf("flag: %v", in.Config)
+	}
+	// Idempotent afterwards.
+	if err := d.Ensure(context.Background(), s, func(agentv1.DeviceState, string) {}); err != nil || fi.restarts != 1 {
+		t.Fatalf("second ensure: %v restarts=%d", err, fi.restarts)
 	}
 }

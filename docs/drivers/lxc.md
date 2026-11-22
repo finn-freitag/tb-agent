@@ -28,6 +28,8 @@ drivers:
     isolate_ports: true           # default; devices can't reach each other
 ```
 
+**Offline policy:** containers boot on the normal network first, so cloud-init can install packages (the SSH server). Once `/run/cloud-init/result.json` exists (or after `offline_provision_timeout`, default 15m), the agent moves their NICs to `tb-incus-off` (no NAT, no DNS) and restarts them.
+
 **Isolation:** with `isolate_ports` (default), the driver copies the profiles' bridged NICs onto each instance with `security.port_isolation=true`. Devices on `incusbr0` then reach the host and the internet, but not each other (tested on Incus 6.0.5). macvlan or physical NICs can't be isolated this way and are left to the profile.
 
 The agent needs access to the Incus socket (member of the `incus-admin` group, or mount the socket when running in a container).

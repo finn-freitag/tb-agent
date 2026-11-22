@@ -152,10 +152,37 @@ type instanceSource struct {
 }
 
 type instance struct {
-	Name   string            `json:"name"`
-	Status string            `json:"status"`
-	Type   string            `json:"type"`
-	Config map[string]string `json:"config"`
+	Name    string                       `json:"name"`
+	Status  string                       `json:"status"`
+	Type    string                       `json:"type"`
+	Config  map[string]string            `json:"config"`
+	Devices map[string]map[string]string `json:"devices,omitempty"`
+}
+
+// fileExists reports whether a file exists inside a running instance.
+func (c *incusClient) fileExists(ctx context.Context, name, path string) (bool, error) {
+	_, err := c.do(ctx, http.MethodGet, "/1.0/instances/"+url.PathEscape(name)+"/files", url.Values{"path": {path}}, nil)
+	if errors.Is(err, errNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// patch updates config keys and devices of an instance (devices given here
+// replace the instance's local devices of the same name).
+func (c *incusClient) patch(ctx context.Context, name string, config map[string]string, devices map[string]map[string]string) error {
+	body := map[string]any{}
+	if config != nil {
+		body["config"] = config
+	}
+	if devices != nil {
+		body["devices"] = devices
+	}
+	r, err := c.do(ctx, http.MethodPatch, "/1.0/instances/"+url.PathEscape(name), nil, body)
+	if err != nil {
+		return err
+	}
+	return c.wait(ctx, r)
 }
 
 type instanceState struct {

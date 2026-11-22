@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sort"
 	"strings"
@@ -60,6 +61,9 @@ type Config struct {
 	// OfflineNetwork is the Incus bridge for devices with the "offline"
 	// policy (no NAT, no DNS; default "tb-incus-off"), created if missing.
 	OfflineNetwork string `yaml:"offline_network"`
+	// OfflineProvisionTimeout bounds the online first boot of offline
+	// containers (default 15m).
+	OfflineProvisionTimeout time.Duration `yaml:"offline_provision_timeout"`
 }
 
 func (c *Config) defaults() {
@@ -92,6 +96,9 @@ func (c *Config) defaults() {
 	}
 	if c.OfflineNetwork == "" {
 		c.OfflineNetwork = "tb-incus-off"
+	}
+	if c.OfflineProvisionTimeout == 0 {
+		c.OfflineProvisionTimeout = 15 * time.Minute
 	}
 }
 
@@ -257,10 +264,12 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 				nics = isolatedNICs(profiles)
 			}
 			if policy == driver.PolicyOffline {
-				if err := d.incus.ensureOfflineNetwork(ctx, d.cfg.OfflineNetwork); err != nil {
-					return fmt.Errorf("offline network: %w", err)
+				// Provision online (cloud-init installs packages, e.g. the
+				// SSH server), then move to the offline network: see finishOffline.
+				body.Config[keyOffline] = "pending"
+				if len(nics) == 0 {
+					nics = isolatedNICs(profiles)
 				}
-				nics = offlineNICs(profiles, d.cfg.OfflineNetwork)
 			}
 			for n, dev := range nics {
 				body.Devices[n] = dev
@@ -292,10 +301,79 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 	default:
 		if !running {
 			report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Starting")
-			return d.incus.setState(ctx, iname, "start", 0, false)
+			if err := d.incus.setState(ctx, iname, "start", 0, false); err != nil {
+				return err
+			}
+		}
+		if inst.Config[keyOffline] == "pending" {
+			return d.finishOffline(ctx, iname, report)
 		}
 	}
 	return nil
+}
+
+// keyOffline marks containers with the offline policy that still have to
+// be moved to the offline network ("pending") or already were ("done").
+const keyOffline = "user.tossbox.offline"
+
+// finishOffline waits until cloud-init has finished its first boot (on the
+// internet network, so packages can be installed), then moves the
+// container's NICs to the offline network and restarts it.
+func (d *Driver) finishOffline(ctx context.Context, iname string, report driver.Reporter) error {
+	report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Provisioning online, then switching to offline")
+	deadline := time.Now().Add(d.cfg.OfflineProvisionTimeout)
+	for {
+		done, err := d.incus.fileExists(ctx, iname, "/run/cloud-init/result.json")
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			d.log().Warn("cloud-init did not finish in time; switching offline anyway", "instance", iname)
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+	if err := d.incus.ensureOfflineNetwork(ctx, d.cfg.OfflineNetwork); err != nil {
+		return fmt.Errorf("offline network: %w", err)
+	}
+	var profiles []map[string]map[string]string
+	for _, pn := range d.cfg.Profiles {
+		devs, err := d.incus.profileDevices(ctx, pn)
+		if err != nil {
+			return fmt.Errorf("profile %s: %w", pn, err)
+		}
+		profiles = append(profiles, devs)
+	}
+	inst, err := d.incus.get(ctx, iname)
+	if err != nil {
+		return err
+	}
+	devices := map[string]map[string]string{}
+	for n, dev := range inst.Devices {
+		devices[n] = dev
+	}
+	for n, dev := range offlineNICs(append(profiles, inst.Devices), d.cfg.OfflineNetwork) {
+		devices[n] = dev
+	}
+	cfg := map[string]string{}
+	for k, v := range inst.Config {
+		if !strings.HasPrefix(k, "volatile.") {
+			cfg[k] = v
+		}
+	}
+	cfg[keyOffline] = "done"
+	report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Switching to the offline network")
+	if err := d.incus.patch(ctx, iname, cfg, devices); err != nil {
+		return fmt.Errorf("switch to offline network: %w", err)
+	}
+	return d.incus.setState(ctx, iname, "restart", int(d.cfg.StopTimeout.Seconds()), true)
 }
 
 // Destroy implements driver.Driver.
@@ -487,4 +565,11 @@ func offlineNICs(profiles []map[string]map[string]string, network string) map[st
 		out[n] = map[string]string{"type": "nic", "network": network, "name": ifname, "security.port_isolation": "true"}
 	}
 	return out
+}
+
+func (d *Driver) log() *slog.Logger {
+	if d.env.Log != nil {
+		return d.env.Log
+	}
+	return slog.Default()
 }
