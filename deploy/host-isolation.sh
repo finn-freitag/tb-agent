@@ -30,16 +30,31 @@ BLOCK_V6="fc00::/7 fe80::/10 ff00::/8"
 
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
 
+# The rules live in the mangle table: it runs before the filter table, where
+# Docker (DOCKER-FORWARD), Tailscale (ts-forward accepts everything leaving
+# via tailscale0), ufw and libvirt insert their ACCEPT rules. ACCEPT/RETURN in
+# mangle only end our checks; the filter rules still apply afterwards.
+T="-t mangle"
+
 # hook <cmd> <parent chain> <our chain>: (re)insert the jump as first rule.
 hook() {
-	while $1 -D "$2" -j "$3" 2>/dev/null; do :; done
-	$1 -I "$2" 1 -j "$3"
+	while $1 $T -D "$2" -j "$3" 2>/dev/null; do :; done
+	$1 $T -I "$2" 1 -j "$3"
 }
 
 unhook() {
-	while $1 -D "$2" -j "$3" 2>/dev/null; do :; done
-	$1 -F "$3" 2>/dev/null || true
-	$1 -X "$3" 2>/dev/null || true
+	while $1 $T -D "$2" -j "$3" 2>/dev/null; do :; done
+	$1 $T -F "$3" 2>/dev/null || true
+	$1 $T -X "$3" 2>/dev/null || true
+}
+
+# Earlier versions used the filter table (DOCKER-USER / INPUT).
+unhook_legacy() {
+	for pair in DOCKER-USER:TOSSBOX-FWD INPUT:TOSSBOX-IN; do
+		while $1 -D "${pair%%:*}" -j "${pair#*:}" 2>/dev/null; do :; done
+		$1 -F "${pair#*:}" 2>/dev/null || true
+		$1 -X "${pair#*:}" 2>/dev/null || true
+	done
 }
 
 # Global IPv6 prefixes of the node (the LAN), excluding the device bridges.
@@ -53,29 +68,28 @@ v6_prefixes() {
 
 apply_family() { # <iptables cmd> <block list> <allow list> <v4|v6>
 	ipt=$1 block=$2 allow=$3 fam=$4
-	$ipt -N TOSSBOX-FWD 2>/dev/null || $ipt -F TOSSBOX-FWD
-	$ipt -N TOSSBOX-IN 2>/dev/null || $ipt -F TOSSBOX-IN
+	unhook_legacy "$ipt"
+	$ipt $T -N TOSSBOX-FWD 2>/dev/null || $ipt $T -F TOSSBOX-FWD
+	$ipt $T -N TOSSBOX-IN 2>/dev/null || $ipt $T -F TOSSBOX-IN
 	for br in $BRIDGES; do
 		# Forwarded traffic from devices: replies are fine, private destinations aren't.
-		$ipt -A TOSSBOX-FWD -i "$br" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-		for a in $allow; do $ipt -A TOSSBOX-FWD -i "$br" -d "$a" -j RETURN; done
-		for b in $block; do $ipt -A TOSSBOX-FWD -i "$br" -d "$b" -j DROP; done
+		$ipt $T -A TOSSBOX-FWD -i "$br" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+		for a in $allow; do $ipt $T -A TOSSBOX-FWD -i "$br" -d "$a" -j RETURN; done
+		for b in $block; do $ipt $T -A TOSSBOX-FWD -i "$br" -d "$b" -j DROP; done
 		# Traffic from devices to the node itself: only DHCP, DNS and ICMP.
-		$ipt -A TOSSBOX-IN -i "$br" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-		$ipt -A TOSSBOX-IN -i "$br" -p udp --dport 53 -j ACCEPT
-		$ipt -A TOSSBOX-IN -i "$br" -p tcp --dport 53 -j ACCEPT
+		$ipt $T -A TOSSBOX-IN -i "$br" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+		$ipt $T -A TOSSBOX-IN -i "$br" -p udp --dport 53 -j RETURN
+		$ipt $T -A TOSSBOX-IN -i "$br" -p tcp --dport 53 -j RETURN
 		if [ "$fam" = v4 ]; then
-			$ipt -A TOSSBOX-IN -i "$br" -p udp --dport 67 -j ACCEPT
-			$ipt -A TOSSBOX-IN -i "$br" -p icmp -j ACCEPT
+			$ipt $T -A TOSSBOX-IN -i "$br" -p udp --dport 67 -j RETURN
+			$ipt $T -A TOSSBOX-IN -i "$br" -p icmp -j RETURN
 		else
-			$ipt -A TOSSBOX-IN -i "$br" -p udp --dport 547 -j ACCEPT
-			$ipt -A TOSSBOX-IN -i "$br" -p ipv6-icmp -j ACCEPT # NDP, router advertisements
+			$ipt $T -A TOSSBOX-IN -i "$br" -p udp --dport 547 -j RETURN
+			$ipt $T -A TOSSBOX-IN -i "$br" -p ipv6-icmp -j RETURN # NDP, router advertisements
 		fi
-		$ipt -A TOSSBOX-IN -i "$br" -j DROP
+		$ipt $T -A TOSSBOX-IN -i "$br" -j DROP
 	done
-	# Docker evaluates DOCKER-USER first in FORWARD and leaves it alone.
-	$ipt -N DOCKER-USER 2>/dev/null && $ipt -I FORWARD 1 -j DOCKER-USER || true
-	hook "$ipt" DOCKER-USER TOSSBOX-FWD
+	hook "$ipt" FORWARD TOSSBOX-FWD
 	hook "$ipt" INPUT TOSSBOX-IN
 }
 
@@ -90,8 +104,9 @@ apply() {
 remove() {
 	for ipt in iptables ip6tables; do
 		command -v $ipt >/dev/null 2>&1 || continue
-		unhook $ipt DOCKER-USER TOSSBOX-FWD
+		unhook $ipt FORWARD TOSSBOX-FWD
 		unhook $ipt INPUT TOSSBOX-IN
+		unhook_legacy $ipt
 	done
 	echo "Tossbox isolation removed"
 }
@@ -117,8 +132,6 @@ X
 	systemctl daemon-reload
 	systemctl enable tossbox-isolation.service
 	systemctl restart tossbox-isolation.service
-	# Runs after tossbox-bridges (ACCEPT rules for virbr0/incusbr0 in
-	# DOCKER-USER) and re-inserts its jump as the first rule, so the drops win.
 	echo "Installed tossbox-isolation.service"
 }
 
