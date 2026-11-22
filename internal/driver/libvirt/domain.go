@@ -21,10 +21,17 @@ type domainParams struct {
 	DiskBus, NetModel, Video                            string
 	Network, Bridge                                     string
 	IsolatePorts                                        bool
-	VNCListen, VNCPassword                              string
-	Windows                                             bool
-	SecureBoot, TPM                                     bool
-	Loader, NVRAMTemplate                               string
+	// EFI boots non-Windows guests with UEFI (secure boot off).
+	EFI bool
+	// VirGL: paravirtual 3D on the host GPU (egl-headless + virtio-gpu-gl).
+	VirGL      bool
+	RenderNode string
+	// HostdevPCI passes a PCI device (an SR-IOV GPU virtual function) through.
+	HostdevPCI             string
+	VNCListen, VNCPassword string
+	Windows                bool
+	SecureBoot, TPM        bool
+	Loader, NVRAMTemplate  string
 }
 
 func x(s string) string {
@@ -70,6 +77,8 @@ var domainTmpl = template.Must(template.New("domain").Funcs(template.FuncMap{"x"
     </firmware>
 {{- if .SecureBoot}}
     <loader secure='yes'/>
+{{- else}}
+    <loader type='pflash'/>
 {{- end}}
     <boot dev='hd'/>
   </os>
@@ -96,10 +105,21 @@ var domainTmpl = template.Must(template.New("domain").Funcs(template.FuncMap{"x"
     <timer name='hypervclock' present='yes'/>
   </clock>
 {{- else}}
+{{- if .EFI}}
+  <os firmware='efi'>
+    <type arch='x86_64' machine='{{x .Machine}}'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <loader type='pflash'/>
+    <boot dev='hd'/>
+  </os>
+{{- else}}
   <os>
     <type arch='x86_64' machine='{{x .Machine}}'>hvm</type>
     <boot dev='hd'/>
   </os>
+{{- end}}
   <features>
     <acpi/>
     <apic/>
@@ -116,12 +136,14 @@ var domainTmpl = template.Must(template.New("domain").Funcs(template.FuncMap{"x"
       <source file='{{x .DiskPath}}'/>
       <target dev='{{if eq .DiskBus "virtio"}}vda{{else}}sda{{end}}' bus='{{x .DiskBus}}'/>
     </disk>
+{{- if .ISOPath}}
     <disk type='file' device='cdrom'>
       <driver name='qemu' type='raw'/>
       <source file='{{x .ISOPath}}'/>
       <target dev='sdz' bus='sata'/>
       <readonly/>
     </disk>
+{{- end}}
 {{- if .Bridge}}
     <interface type='bridge'>
       <source bridge='{{x .Bridge}}'/>
@@ -150,9 +172,27 @@ var domainTmpl = template.Must(template.New("domain").Funcs(template.FuncMap{"x"
     <graphics type='vnc' autoport='yes' listen='{{x .VNCListen}}' passwd='{{x .VNCPassword}}'>
       <listen type='address' address='{{x .VNCListen}}'/>
     </graphics>
+{{- if .VirGL}}
+    <graphics type='egl-headless'>
+      <gl rendernode='{{x .RenderNode}}'/>
+    </graphics>
+    <video>
+      <model type='virtio' heads='1' primary='yes'>
+        <acceleration accel3d='yes'/>
+      </model>
+    </video>
+{{- else}}
     <video>
       <model type='{{x .Video}}'/>
     </video>
+{{- end}}
+{{- if .HostdevPCI}}
+    <hostdev mode='subsystem' type='pci' managed='yes'>
+      <source>
+        <address domain='0x{{slice .HostdevPCI 0 4}}' bus='0x{{slice .HostdevPCI 5 7}}' slot='0x{{slice .HostdevPCI 8 10}}' function='0x{{slice .HostdevPCI 11 12}}'/>
+      </source>
+    </hostdev>
+{{- end}}
 {{- if .TPM}}
     <tpm model='tpm-crb'>
       <backend type='emulator' version='2.0'/>

@@ -57,6 +57,9 @@ type Config struct {
 	// security.port_isolation=true, so devices can't reach each other.
 	// Default true.
 	IsolatePorts *bool `yaml:"isolate_ports"`
+	// OfflineNetwork is the Incus bridge for devices with the "offline"
+	// policy (no NAT, no DNS; default "tb-incus-off"), created if missing.
+	OfflineNetwork string `yaml:"offline_network"`
 }
 
 func (c *Config) defaults() {
@@ -86,6 +89,9 @@ func (c *Config) defaults() {
 	}
 	if c.StopTimeout == 0 {
 		c.StopTimeout = 30 * time.Second
+	}
+	if c.OfflineNetwork == "" {
+		c.OfflineNetwork = "tb-incus-off"
 	}
 }
 
@@ -123,6 +129,11 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 		Families: []string{"linux"},
 		Services: []string{"ssh", "http", "https"},
 		Healthy:  true,
+
+		NetworkPolicies: []string{driver.PolicyInternet, driver.PolicyOffline},
+	}
+	if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
+		caps.GpuMode, caps.GpuSlots = "render", -1 // Incus gpu device (host render node)
 	}
 	if d.cfg.AllowVMs {
 		caps.Services = append(caps.Services, "vnc")
@@ -227,7 +238,12 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 		if err != nil {
 			return err
 		}
-		if d.cfg.IsolatePorts == nil || *d.cfg.IsolatePorts {
+		policy, err := driver.NetworkPolicy(spec)
+		if err != nil {
+			return err
+		}
+		isolate := d.cfg.IsolatePorts == nil || *d.cfg.IsolatePorts
+		if isolate || policy == driver.PolicyOffline {
 			var profiles []map[string]map[string]string
 			for _, pn := range d.cfg.Profiles {
 				devs, err := d.incus.profileDevices(ctx, pn)
@@ -236,9 +252,25 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 				}
 				profiles = append(profiles, devs)
 			}
-			for n, dev := range isolatedNICs(profiles) {
+			nics := map[string]map[string]string{}
+			if isolate {
+				nics = isolatedNICs(profiles)
+			}
+			if policy == driver.PolicyOffline {
+				if err := d.incus.ensureOfflineNetwork(ctx, d.cfg.OfflineNetwork); err != nil {
+					return fmt.Errorf("offline network: %w", err)
+				}
+				nics = offlineNICs(profiles, d.cfg.OfflineNetwork)
+			}
+			for n, dev := range nics {
 				body.Devices[n] = dev
 			}
+		}
+		if driver.WantsGPU(spec) {
+			if d.env.GPU == nil || d.env.GPU.RenderNode() == "" {
+				return errors.New("lxc: no GPU render node on this node")
+			}
+			body.Devices["gpu0"] = map[string]string{"type": "gpu", "gputype": "physical"}
 		}
 		report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating container (downloading image if needed)")
 		if err := d.incus.create(ctx, body); err != nil {
@@ -429,6 +461,30 @@ func isolatedNICs(profiles []map[string]map[string]string) map[string]map[string
 		}
 		c["security.port_isolation"] = "true"
 		out[n] = c
+	}
+	return out
+}
+
+// offlineNICs replaces every NIC of the profiles (eth0 if there is none)
+// with an isolated port on the offline network.
+func offlineNICs(profiles []map[string]map[string]string, network string) map[string]map[string]string {
+	names := map[string]string{}
+	for _, devs := range profiles {
+		for n, dev := range devs {
+			if dev["type"] == "nic" {
+				names[n] = dev["name"]
+			}
+		}
+	}
+	if len(names) == 0 {
+		names["eth0"] = "eth0"
+	}
+	out := map[string]map[string]string{}
+	for n, ifname := range names {
+		if ifname == "" {
+			ifname = n
+		}
+		out[n] = map[string]string{"type": "nic", "network": network, "name": ifname, "security.port_isolation": "true"}
 	}
 	return out
 }

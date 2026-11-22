@@ -17,12 +17,18 @@
 # Usage:  sudo sh host-isolation.sh            apply now
 #         sudo sh host-isolation.sh install    apply now and on every boot
 #         sudo sh host-isolation.sh remove     undo
+# Bridges of the "offline" network policy (tb-docker-off, tb-virt-off,
+# tb-incus-off) get no forwarding at all and only DHCP from the node (no DNS),
+# on top of what Docker/libvirt/Incus already enforce for them.
+#
 # Environment: TOSSBOX_BRIDGES (default "tb-docker virbr0 incusbr0"),
+#              TOSSBOX_OFFLINE_BRIDGES (default "tb-docker-off tb-virt-off tb-incus-off"),
 #              TOSSBOX_ALLOW_V4 / TOSSBOX_ALLOW_V6: destinations to allow
 #              anyway (space separated CIDRs).
 set -eu
 
 BRIDGES=${TOSSBOX_BRIDGES:-"tb-docker virbr0 incusbr0"}
+OFFLINE_BRIDGES=${TOSSBOX_OFFLINE_BRIDGES:-"tb-docker-off tb-virt-off tb-incus-off"}
 ALLOW_V4=${TOSSBOX_ALLOW_V4:-}
 ALLOW_V6=${TOSSBOX_ALLOW_V6:-}
 BLOCK_V4="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 224.0.0.0/4"
@@ -89,6 +95,18 @@ apply_family() { # <iptables cmd> <block list> <allow list> <v4|v6>
 		fi
 		$ipt $T -A TOSSBOX-IN -i "$br" -j DROP
 	done
+	for br in $OFFLINE_BRIDGES; do
+		# No forwarding in either direction; the node reaches devices directly.
+		$ipt $T -A TOSSBOX-FWD -i "$br" -j DROP
+		$ipt $T -A TOSSBOX-FWD -o "$br" -j DROP
+		$ipt $T -A TOSSBOX-IN -i "$br" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+		if [ "$fam" = v4 ]; then
+			$ipt $T -A TOSSBOX-IN -i "$br" -p udp --dport 67 -j RETURN
+		else
+			$ipt $T -A TOSSBOX-IN -i "$br" -p ipv6-icmp -j RETURN
+		fi
+		$ipt $T -A TOSSBOX-IN -i "$br" -j DROP
+	done
 	hook "$ipt" FORWARD TOSSBOX-FWD
 	hook "$ipt" INPUT TOSSBOX-IN
 }
@@ -98,7 +116,7 @@ apply() {
 	if command -v ip6tables >/dev/null 2>&1; then
 		apply_family ip6tables "$BLOCK_V6 $(v6_prefixes | tr '\n' ' ')" "$ALLOW_V6" v6
 	fi
-	echo "Tossbox isolation active for: $BRIDGES"
+	echo "Tossbox isolation active for: $BRIDGES (offline: $OFFLINE_BRIDGES)"
 }
 
 remove() {

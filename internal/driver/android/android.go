@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -151,6 +152,14 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 	sort.Strings(caps.Services)
 	caps.Healthy = len(caps.Backends) > 0
 	caps.Message = strings.Join(problems, "; ")
+	if _, ok := d.backends["redroid"]; ok && slices.Contains(caps.Backends, "redroid") {
+		caps.NetworkPolicies = []string{driver.PolicyInternet, driver.PolicyOffline}
+		if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
+			caps.GpuMode, caps.GpuSlots = "render", -1
+		}
+	} else {
+		caps.NetworkPolicies = []string{driver.PolicyInternet}
+	}
 	return caps
 }
 
@@ -184,6 +193,9 @@ func (d *Driver) Ensure(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 	b, err := d.backendFor(spec)
 	if err != nil {
 		return err
+	}
+	if b.name() != "redroid" && (spec.GetNetworkPolicy() == driver.PolicyOffline || driver.WantsGPU(spec)) {
+		return fmt.Errorf("the %s backend supports neither the offline network policy nor GPU sharing", b.name())
 	}
 	return b.ensure(ctx, spec, report)
 }

@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -54,9 +55,20 @@ type Config struct {
 	// the same network can't reach each other (only the host/uplink).
 	// Default true.
 	IsolatePorts *bool `yaml:"isolate_ports"`
+	// OfflineNetwork is the libvirt network for devices with the "offline"
+	// policy: no forwarding, no DNS, only DHCP; the agent defines it if
+	// missing (default "tossbox-offline", bridge tb-virt-off).
+	OfflineNetwork string `yaml:"offline_network"`
+	// OfflineSubnet is its IPv4 /24 (default 192.168.251.0/24).
+	OfflineSubnet string `yaml:"offline_subnet"`
+	// GPU: how devices that request a GPU get one: "" (not offered),
+	// "virgl" (shared paravirtual 3D via the node's render node; Linux and
+	// ChromeOS guests) or "sriov" (one SR-IOV virtual function per device,
+	// see the node's gpu.sriov section).
+	GPU string `yaml:"gpu"`
 	// StoragePool holds all device disks (default "default").
 	StoragePool string `yaml:"storage_pool"`
-	// Families this node offers (default [linux, windows]).
+	// Families this node offers (default [linux, windows, chromeos]).
 	Families []string `yaml:"families"`
 	Machine  string   `yaml:"machine"`  // default q35
 	CPUMode  string   `yaml:"cpu_mode"` // default host-passthrough
@@ -123,7 +135,7 @@ func New(env driver.Env, c Config) (*Driver, error) {
 		c.StoragePool = "default"
 	}
 	if len(c.Families) == 0 {
-		c.Families = []string{"linux", "windows"}
+		c.Families = []string{"linux", "windows", "chromeos"}
 	}
 	if c.Machine == "" {
 		c.Machine = "q35"
@@ -133,6 +145,17 @@ func New(env driver.Env, c Config) (*Driver, error) {
 	}
 	if c.VNCListen == "" {
 		c.VNCListen = "127.0.0.1"
+	}
+	if c.OfflineNetwork == "" {
+		c.OfflineNetwork = "tossbox-offline"
+	}
+	if c.OfflineSubnet == "" {
+		c.OfflineSubnet = "192.168.251.0/24"
+	}
+	switch c.GPU {
+	case "", "virgl", "sriov":
+	default:
+		return nil, fmt.Errorf("libvirt: gpu must be virgl, sriov or empty, got %q", c.GPU)
 	}
 	if c.Windows.DiskBus == "" {
 		c.Windows.DiskBus = "virtio"
@@ -194,7 +217,69 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 		caps.Healthy = false
 		caps.Message = err.Error()
 	}
+	caps.NetworkPolicies = []string{driver.PolicyInternet}
+	if d.cfg.Bridge == "" {
+		caps.NetworkPolicies = append(caps.NetworkPolicies, driver.PolicyOffline)
+	}
+	switch d.cfg.GPU {
+	case "virgl":
+		if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
+			caps.GpuMode, caps.GpuSlots = "virgl", -1
+		}
+	case "sriov":
+		if d.env.GPU != nil {
+			if n := len(d.env.GPU.VFs()); n > 0 {
+				caps.GpuMode, caps.GpuSlots = "sriov", int32(n)
+			}
+		}
+	}
 	return caps
+}
+
+// offlineNetworkXML is an isolated libvirt network: no <forward> (libvirt
+// rejects forwarding to and from it), no DNS, DHCP only.
+func offlineNetworkXML(name, subnet string) (string, error) {
+	p, err := netip.ParsePrefix(subnet)
+	if err != nil || !p.Addr().Is4() || p.Bits() != 24 {
+		return "", fmt.Errorf("libvirt: offline_subnet must be an IPv4 /24, got %q", subnet)
+	}
+	b := p.Masked().Addr().As4()
+	ip := func(last byte) string { return netip.AddrFrom4([4]byte{b[0], b[1], b[2], last}).String() }
+	return fmt.Sprintf(`<network>
+  <name>%s</name>
+  <bridge name='tb-virt-off' stp='on' delay='0'/>
+  <dns enable='no'/>
+  <ip address='%s' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='%s' end='%s'/>
+    </dhcp>
+  </ip>
+</network>`, x(name), ip(1), ip(2), ip(254)), nil
+}
+
+// ensureOfflineNetwork defines and starts the offline network if needed.
+func (d *Driver) ensureOfflineNetwork(lv *golibvirt.Libvirt) error {
+	net, err := lv.NetworkLookupByName(d.cfg.OfflineNetwork)
+	if err != nil {
+		if !golibvirt.IsNotFound(err) {
+			return err
+		}
+		xml, err := offlineNetworkXML(d.cfg.OfflineNetwork, d.cfg.OfflineSubnet)
+		if err != nil {
+			return err
+		}
+		if net, err = lv.NetworkDefineXML(xml); err != nil {
+			return fmt.Errorf("libvirt: define offline network: %w", err)
+		}
+		d.log.Info("defined offline network", "network", d.cfg.OfflineNetwork, "subnet", d.cfg.OfflineSubnet)
+	}
+	if active, err := lv.NetworkIsActive(net); err == nil && active == 0 {
+		if err := lv.NetworkCreate(net); err != nil {
+			return fmt.Errorf("libvirt: start offline network: %w", err)
+		}
+	}
+	_ = lv.NetworkSetAutostart(net, 1)
+	return nil
 }
 
 func isNoVol(err error) bool {
@@ -274,6 +359,43 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 	if !contains(d.cfg.Families, family) {
 		return golibvirt.Domain{}, fmt.Errorf("libvirt: family %q not enabled on this node", family)
 	}
+	policy, err := driver.NetworkPolicy(spec)
+	if err != nil {
+		return golibvirt.Domain{}, err
+	}
+	network := d.cfg.Network
+	if policy == driver.PolicyOffline {
+		if d.cfg.Bridge != "" {
+			return golibvirt.Domain{}, errors.New("libvirt: the offline network policy needs a libvirt network (not bridge mode)")
+		}
+		if err := d.ensureOfflineNetwork(lv); err != nil {
+			return golibvirt.Domain{}, err
+		}
+		network = d.cfg.OfflineNetwork
+	}
+	var virgl bool
+	var renderNode, vf string
+	if driver.WantsGPU(spec) {
+		switch d.cfg.GPU {
+		case "virgl":
+			if d.env.GPU != nil {
+				renderNode = d.env.GPU.RenderNode()
+			}
+			if renderNode == "" {
+				return golibvirt.Domain{}, errors.New("libvirt: no GPU render node on this node")
+			}
+			virgl = true
+		case "sriov":
+			if d.env.GPU == nil {
+				return golibvirt.Domain{}, errors.New("libvirt: GPU sharing is not configured")
+			}
+			if vf, err = d.env.GPU.Acquire(spec.DeviceId); err != nil {
+				return golibvirt.Domain{}, err
+			}
+		default:
+			return golibvirt.Domain{}, errors.New("libvirt: this node offers no GPU for VMs (drivers.libvirt.gpu)")
+		}
+	}
 	pool, err := lv.StoragePoolLookupByName(d.cfg.StoragePool)
 	if err != nil {
 		return golibvirt.Domain{}, fmt.Errorf("libvirt: storage pool %q: %w", d.cfg.StoragePool, err)
@@ -328,24 +450,26 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 			return golibvirt.Domain{}, err
 		}
 	}
-	seed, err := cloudinit.ForProfile(tpl.GetGuestProfile(), cloudinit.Params{
-		InstanceID: spec.DeviceId,
-		Hostname:   spec.Hostname,
-		User:       tpl.GetDefaultUser(),
-		Password:   password,
-		SSHKeys:    spec.GetSshAuthorizedKeys(),
-		ProductKey: productKey,
-	}.WithTemplate(tpl.GetParams()))
-	if err != nil {
-		return golibvirt.Domain{}, err
-	}
-	iso, err := seed.ISO()
-	if err != nil {
-		return golibvirt.Domain{}, err
-	}
-	isoPath, err := d.uploadVolume(lv, pool, isoName(spec.DeviceId), "raw", int64(len(iso)), strings.NewReader(string(iso)), nil)
-	if err != nil {
-		return golibvirt.Domain{}, err
+	isoPath := ""
+	if tpl.GetGuestProfile() != "none" { // "none": the guest isn't provisioned (e.g. ChromeOS)
+		seed, err := cloudinit.ForProfile(tpl.GetGuestProfile(), cloudinit.Params{
+			InstanceID: spec.DeviceId,
+			Hostname:   spec.Hostname,
+			User:       tpl.GetDefaultUser(),
+			Password:   password,
+			SSHKeys:    spec.GetSshAuthorizedKeys(),
+			ProductKey: productKey,
+		}.WithTemplate(tpl.GetParams()))
+		if err != nil {
+			return golibvirt.Domain{}, err
+		}
+		iso, err := seed.ISO()
+		if err != nil {
+			return golibvirt.Domain{}, err
+		}
+		if isoPath, err = d.uploadVolume(lv, pool, isoName(spec.DeviceId), "raw", int64(len(iso)), strings.NewReader(string(iso)), nil); err != nil {
+			return golibvirt.Domain{}, err
+		}
 	}
 
 	// 4. Domain.
@@ -377,7 +501,9 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 		Machine: d.cfg.Machine, CPUMode: d.cfg.CPUMode,
 		DiskPath: diskPath, ISOPath: isoPath,
 		DiskBus: "virtio", NetModel: "virtio", Video: "virtio",
-		Network: d.cfg.Network, Bridge: d.cfg.Bridge, IsolatePorts: boolOr(d.cfg.IsolatePorts, true),
+		Network: network, Bridge: d.cfg.Bridge, IsolatePorts: boolOr(d.cfg.IsolatePorts, true),
+		VirGL: virgl, RenderNode: renderNode, HostdevPCI: vf,
+		EFI:       tpl.GetParams()["firmware"] == "efi",
 		VNCListen: d.cfg.VNCListen, VNCPassword: vncPW,
 		Windows: win,
 	}
@@ -401,6 +527,9 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 	}
 	if v := tpl.GetParams()["video"]; v != "" {
 		p.Video = v
+	}
+	if v := tpl.GetParams()["net_model"]; v != "" {
+		p.NetModel = v
 	}
 	domXML, err := renderDomain(p)
 	if err != nil {
@@ -542,6 +671,9 @@ func (d *Driver) Destroy(ctx context.Context, deviceID string) error {
 		}
 	}
 	d.env.Licenses.Release(deviceID)
+	if d.env.GPU != nil {
+		d.env.GPU.Release(deviceID)
+	}
 	return nil
 }
 

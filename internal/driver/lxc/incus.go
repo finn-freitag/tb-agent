@@ -192,6 +192,24 @@ func (c *incusClient) get(ctx context.Context, name string) (*instance, error) {
 	return &in, json.Unmarshal(r.Metadata, &in)
 }
 
+// ensureOfflineNetwork creates a managed bridge without NAT and DNS: Docker's
+// FORWARD policy (and the node firewall) drop everything it would route, so
+// instances on it only reach the host through established connections.
+func (c *incusClient) ensureOfflineNetwork(ctx context.Context, name string) error {
+	if _, err := c.do(ctx, http.MethodGet, "/1.0/networks/"+url.PathEscape(name), nil, nil); err == nil {
+		return nil
+	} else if !errors.Is(err, errNotFound) {
+		return err
+	}
+	_, err := c.do(ctx, http.MethodPost, "/1.0/networks", nil, map[string]any{
+		"name": name, "type": "bridge", "description": "Tossbox: devices with the offline network policy",
+		"config": map[string]string{
+			"ipv4.address": "auto", "ipv4.nat": "false", "ipv6.address": "none", "dns.mode": "none",
+		},
+	})
+	return err
+}
+
 // profileDevices returns the devices of a profile.
 func (c *incusClient) profileDevices(ctx context.Context, name string) (map[string]map[string]string, error) {
 	r, err := c.do(ctx, http.MethodGet, "/1.0/profiles/"+url.PathEscape(name), nil, nil)

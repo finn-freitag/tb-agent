@@ -101,6 +101,26 @@ Devices of different users share a node, so the agent keeps them apart:
 - **Inbound:** forwarded device ports only accept the dashboard and private networks (`allowed_sources`).
 - **adb:** redroid devices require adb authentication with the owner's keys (see `docs/drivers/android.md`).
 
+- **Network policy per device:** `internet` (default; with `deploy/host-isolation.sh` private networks are blocked) or `offline`. Offline devices sit on separate networks without any forwarding: the Docker network `tossbox-offline` (internal), the libvirt network `tossbox-offline` (no `<forward>`, no DNS) and the Incus bridge `tb-incus-off` (no NAT). They have no internet and no DNS, but users still reach them through their forwarded services and Guacamole, because those connections start on the node. Supported by docker-qemu, android (redroid), browser, libvirt (network mode) and lxc.
+
+## GPU sharing
+
+Devices can ask for a GPU (`gpu: true` in the API, "Share the node's GPU" in the UI). How they get one depends on the driver:
+
+| Driver | Mode | How |
+|---|---|---|
+| libvirt | `virgl` | `drivers.libvirt.gpu: virgl`: shared paravirtual 3D (virtio-gpu with VirGL on the node's render node). Linux and ChromeOS guests, unlimited devices. Needs the EGL libraries on the host: `sudo sh deploy/host-gpu.sh virgl` |
+| libvirt | `sriov` | `drivers.libvirt.gpu: sriov` + `gpu.sriov.pf`: each device gets its own SR-IOV virtual function (PCI passthrough), so as many devices as VFs. Intel iGPUs need the xe driver in SR-IOV mode: `sudo sh deploy/host-gpu.sh sriov 7` (reboot; experimental, `revert` undoes it) |
+| docker-qemu | `render` | qemux renders the guest's virtio-gpu with VirGL (`GPU=Y`, `/dev/dri`); Linux guests |
+| android (redroid) | `render` | the device renders on the host GPU (`androidboot.redroid_gpu_mode=host`) |
+| lxc | `render` | an Incus `gpu` device (the container sees the host's render node) |
+
+The agent container needs `/dev/dri` (see `docker-compose.yml`) to find the render node. Templates can mark a GPU as `required` or `recommended` (param `gpu`). Admins can limit devices with a GPU per user (quota `max_gpus`).
+
+## Disposable browsers
+
+The `browser` driver runs web browsers in containers (templates `browser-firefox`, `browser-chromium`, based on jlesage images): VNC on 5900 (password = device password, used by Guacamole) and a web UI on 5800 behind a login page (device user + password). Nothing persists: deleting the device deletes the profile, history and downloads. Containers run with `no-new-privileges`, a PID limit and a memory limit. The container disk isn't limited by `storage_gb`.
+
 ## Development
 
 ```bash

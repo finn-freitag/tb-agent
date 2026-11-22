@@ -16,6 +16,7 @@ import (
 	"github.com/finn-freitag/tb-agent/internal/adbkey"
 	"github.com/finn-freitag/tb-agent/internal/config"
 	"github.com/finn-freitag/tb-agent/internal/driver"
+	"github.com/finn-freitag/tb-agent/internal/gpu"
 	"github.com/finn-freitag/tb-agent/internal/hostinfo"
 	"github.com/finn-freitag/tb-agent/internal/images"
 	"github.com/finn-freitag/tb-agent/internal/licenses"
@@ -50,6 +51,10 @@ func New(cfg *config.Config, log *slog.Logger) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent: adb key: %w", err)
 	}
+	gpus, err := gpu.New(cfg.GPU, cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
 	a := &Agent{cfg: cfg, log: log, drivers: map[string]driver.Driver{}, licenses: lic, images: img}
 	for _, name := range cfg.DriverNames() {
 		dir := filepath.Join(cfg.DataDir, "drivers", name)
@@ -64,6 +69,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Agent, error) {
 			Log:      log.With("driver", name),
 
 			ADBPublicKey: adbKey.PublicKey("tossbox-agent@" + cfg.Name),
+			GPU:          gpus,
 		}, cfg.DriverConfig(name))
 		if err != nil {
 			return nil, fmt.Errorf("agent: driver %s: %w", name, err)

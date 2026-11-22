@@ -21,7 +21,10 @@ type RedroidConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Socket  string `yaml:"socket"`
 	Network string `yaml:"network"`
-	Image   string `yaml:"image"`
+	// OfflineNetwork is used for devices with the "offline" policy
+	// (default "tossbox-offline", an internal Docker network).
+	OfflineNetwork string `yaml:"offline_network"`
+	Image          string `yaml:"image"`
 	// DataDir holds each device's /data partition (bind mounted).
 	DataDir string `yaml:"data_dir"`
 	// HostDataDir is DataDir as seen by the Docker daemon (agent in a container).
@@ -51,6 +54,9 @@ type redroid struct {
 func newRedroid(env driver.Env, cfg RedroidConfig) *redroid {
 	if cfg.Network == "" {
 		cfg.Network = dockerapi.DeviceNetwork
+	}
+	if cfg.OfflineNetwork == "" {
+		cfg.OfflineNetwork = dockerapi.OfflineNetwork
 	}
 	if cfg.Image == "" {
 		cfg.Image = "redroid/redroid:15.0.0_64only-latest"
@@ -142,7 +148,7 @@ func (r *redroid) containerConfig(spec *agentv1.DeviceSpec) dockerapi.ContainerC
 		fmt.Sprintf("androidboot.redroid_width=%d", width),
 		fmt.Sprintf("androidboot.redroid_height=%d", height),
 		fmt.Sprintf("androidboot.redroid_dpi=%d", dpi),
-		"androidboot.redroid_gpu_mode=" + r.cfg.GPUMode,
+		"androidboot.redroid_gpu_mode=" + r.gpuMode(spec),
 	}
 	if *r.cfg.UseMemfd {
 		cmd = append(cmd, "androidboot.use_memfd=true")
@@ -155,7 +161,7 @@ func (r *redroid) containerConfig(spec *agentv1.DeviceSpec) dockerapi.ContainerC
 		Privileged:    true,
 		Binds:         []string{r.hostPath(r.dataDir(spec.DeviceId)) + ":/data"},
 		RestartPolicy: dockerapi.RestartPolicy{Name: "unless-stopped"},
-		NetworkMode:   r.cfg.Network,
+		NetworkMode:   r.network(spec),
 	}
 	if m := res.GetRamMb(); m > 0 {
 		hc.Memory = m << 20
@@ -205,8 +211,19 @@ func (r *redroid) ensure(ctx context.Context, spec *agentv1.DeviceSpec, report d
 			}
 		}
 		report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating Android container")
-		if err := r.docker.EnsureNetwork(ctx, r.cfg.Network); err != nil {
-			return fmt.Errorf("network %s: %w", r.cfg.Network, err)
+		policy, err := driver.NetworkPolicy(spec)
+		if err != nil {
+			return err
+		}
+		if driver.WantsGPU(spec) && (r.env.GPU == nil || r.env.GPU.RenderNode() == "") {
+			return errors.New("no GPU render node on this node")
+		}
+		ensure := r.docker.EnsureNetwork
+		if policy == driver.PolicyOffline {
+			ensure = r.docker.EnsureOfflineNetwork
+		}
+		if err := ensure(ctx, r.network(spec)); err != nil {
+			return fmt.Errorf("network %s: %w", r.network(spec), err)
 		}
 		if _, err := r.docker.CreateContainer(ctx, cname, cfg); err != nil {
 			return err
@@ -335,4 +352,21 @@ func (r *redroid) writeADBKeys(spec *agentv1.DeviceSpec) error {
 	_ = os.Chown(dir, aidSystem, aidShell)
 	_ = os.Chown(tmp, aidSystem, aidShell)
 	return os.Rename(tmp, path)
+}
+
+// network returns the Docker network for the device's policy.
+func (r *redroid) network(spec *agentv1.DeviceSpec) string {
+	if spec.GetNetworkPolicy() == driver.PolicyOffline {
+		return r.cfg.OfflineNetwork
+	}
+	return r.cfg.Network
+}
+
+// gpuMode: devices that request a GPU render on the host GPU (the container
+// is privileged and sees /dev/dri); others use the node's gpu_mode.
+func (r *redroid) gpuMode(spec *agentv1.DeviceSpec) string {
+	if driver.WantsGPU(spec) {
+		return "host"
+	}
+	return r.cfg.GPUMode
 }

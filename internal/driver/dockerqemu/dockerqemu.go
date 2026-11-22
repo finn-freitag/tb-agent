@@ -51,8 +51,11 @@ const (
 //	    linux_image: qemux/qemu
 //	    stop_timeout: 120s
 type Config struct {
-	Socket         string        `yaml:"socket"`
-	Network        string        `yaml:"network"`
+	Socket  string `yaml:"socket"`
+	Network string `yaml:"network"`
+	// OfflineNetwork is used for devices with the "offline" policy (an
+	// internal Docker network without outbound traffic; default "tossbox-offline").
+	OfflineNetwork string        `yaml:"offline_network"`
 	StorageDir     string        `yaml:"storage_dir"`
 	HostStorageDir string        `yaml:"host_storage_dir"`
 	PreparedDir    string        `yaml:"prepared_dir"`
@@ -69,6 +72,9 @@ func (c *Config) defaults(env driver.Env) {
 	}
 	if c.Network == "" {
 		c.Network = dockerapi.DeviceNetwork
+	}
+	if c.OfflineNetwork == "" {
+		c.OfflineNetwork = dockerapi.OfflineNetwork
 	}
 	if c.StorageDir == "" {
 		c.StorageDir = filepath.Join(env.DataDir, "devices")
@@ -128,6 +134,11 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 		Families: []string{"windows", "linux"},
 		Services: []string{"ssh", "rdp", "vnc", "http", "https"},
 		Healthy:  true,
+
+		NetworkPolicies: []string{driver.PolicyInternet, driver.PolicyOffline},
+	}
+	if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
+		caps.GpuMode, caps.GpuSlots = "render", -1 // Linux guests (qemux virgl)
 	}
 	if err := d.docker.Ping(ctx); err != nil {
 		caps.Healthy = false
@@ -200,8 +211,11 @@ func (d *Driver) applyPower(ctx context.Context, ci *dockerapi.ContainerInfo, po
 
 // containerPlan is the result of mapping a DeviceSpec to a container.
 type containerPlan struct {
-	Image  string
-	Config dockerapi.ContainerConfig
+	// Network the container joins; Offline: an internal network.
+	Network string
+	Offline bool
+	Image   string
+	Config  dockerapi.ContainerConfig
 	// Files to prepare in the device dir before creating the container.
 	BootImage       *agentv1.ImageSpec // Linux: downloaded and copied to <dir>/boot.<ext>
 	BootFile        string
@@ -291,6 +305,14 @@ func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPl
 		}
 	}
 
+	policy, err := driver.NetworkPolicy(spec)
+	if err != nil {
+		return nil, err
+	}
+	p.Network = d.cfg.Network
+	if policy == driver.PolicyOffline {
+		p.Network, p.Offline = d.cfg.OfflineNetwork, true
+	}
 	hc := dockerapi.HostConfig{
 		Binds: binds,
 		Devices: []dockerapi.DeviceMapping{
@@ -299,7 +321,22 @@ func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPl
 		},
 		CapAdd:        []string{"NET_ADMIN"},
 		RestartPolicy: dockerapi.RestartPolicy{Name: "unless-stopped"},
-		NetworkMode:   d.cfg.Network,
+		NetworkMode:   p.Network,
+	}
+	if driver.WantsGPU(spec) {
+		// qemux renders the guest's virtio-gpu with VirGL on the host GPU.
+		if tpl.GetFamily() == "windows" {
+			return nil, errors.New("docker-qemu: GPU sharing is only available for Linux guests")
+		}
+		rn := ""
+		if d.env.GPU != nil {
+			rn = d.env.GPU.RenderNode()
+		}
+		if rn == "" {
+			return nil, errors.New("docker-qemu: no GPU render node on this node")
+		}
+		hc.Devices = append(hc.Devices, dockerapi.DeviceMapping{PathOnHost: "/dev/dri", PathInContainer: "/dev/dri", CgroupPermissions: "rwm"})
+		env = append(env, "GPU=Y")
 	}
 	if capPct := res.GetCpuCapPercent(); capPct > 0 {
 		hc.NanoCPUs = int64(runtime.NumCPU()) * int64(capPct) * 1e7 // cores * pct/100 * 1e9
@@ -394,8 +431,12 @@ func (d *Driver) create(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 	}
 
 	report(agentv1.DeviceState_DEVICE_STATE_PROVISIONING, "Creating container")
-	if err := d.docker.EnsureNetwork(ctx, d.cfg.Network); err != nil {
-		return fmt.Errorf("network %s: %w", d.cfg.Network, err)
+	ensure := d.docker.EnsureNetwork
+	if p.Offline {
+		ensure = d.docker.EnsureOfflineNetwork
+	}
+	if err := ensure(ctx, p.Network); err != nil {
+		return fmt.Errorf("network %s: %w", p.Network, err)
 	}
 	if _, err := d.docker.CreateContainer(ctx, driver.DomainName(id), p.Config); err != nil {
 		return err

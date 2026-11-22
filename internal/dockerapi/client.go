@@ -233,6 +233,8 @@ type HostConfig struct {
 	RestartPolicy     RestartPolicy   `json:"RestartPolicy,omitempty"`
 	NetworkMode       string          `json:"NetworkMode,omitempty"`
 	SecurityOpt       []string        `json:"SecurityOpt,omitempty"`
+	ShmSize           int64           `json:"ShmSize,omitempty"`
+	PidsLimit         int64           `json:"PidsLimit,omitempty"`
 }
 
 // ContainerConfig is the body of POST /containers/create.
@@ -400,11 +402,28 @@ const DeviceNetwork = "tossbox"
 // firewall rules can refer to it.
 const DeviceBridge = "tb-docker"
 
+// OfflineNetwork is the network for devices with the "offline" policy: an
+// internal network (no gateway, no NAT, no outbound traffic), still
+// reachable from the host, i.e. from the agent's port forwarder.
+const OfflineNetwork = "tossbox-offline"
+
+// OfflineBridge is the Linux bridge name of OfflineNetwork.
+const OfflineBridge = "tb-docker-off"
+
 // EnsureNetwork creates the bridge network name if it doesn't exist. Created
 // networks have inter-container communication disabled, so devices can't
 // reach each other (the host, and thus the agent, still reaches them).
 // Docker's predefined networks are used as they are.
 func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
+	return c.ensureNetwork(ctx, name, name == OfflineNetwork)
+}
+
+// EnsureOfflineNetwork creates an internal network (no outbound traffic).
+func (c *Client) EnsureOfflineNetwork(ctx context.Context, name string) error {
+	return c.ensureNetwork(ctx, name, true)
+}
+
+func (c *Client) ensureNetwork(ctx context.Context, name string, internal bool) error {
 	switch name {
 	case "", "bridge", "host", "none", "default":
 		return nil
@@ -417,11 +436,14 @@ func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
 		return err
 	}
 	opts := map[string]string{"com.docker.network.bridge.enable_icc": "false"}
-	if name == DeviceNetwork {
+	switch name {
+	case DeviceNetwork:
 		opts["com.docker.network.bridge.name"] = DeviceBridge
+	case OfflineNetwork:
+		opts["com.docker.network.bridge.name"] = OfflineBridge
 	}
 	err = c.doJSON(ctx, http.MethodPost, "/networks/create", nil, map[string]any{
-		"Name": name, "Driver": "bridge", "Options": opts,
+		"Name": name, "Driver": "bridge", "Options": opts, "Internal": internal,
 		"Labels": map[string]string{"tossbox.managed": "true"},
 	}, nil)
 	var apiErr *APIError

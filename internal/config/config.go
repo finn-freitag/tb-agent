@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/finn-freitag/tb-agent/internal/gpu"
 )
 
 // Config is the parsed node config.
@@ -25,11 +27,13 @@ type Config struct {
 	// CIDRs, "dashboard" (addresses of dashboard.endpoint), "private" (LAN,
 	// ULA and Tailscale ranges) or "any". Default: [dashboard, private].
 	// Loopback and the host's own addresses always work.
-	AllowedSources []string               `yaml:"allowed_sources"`
-	Limits         Limits                 `yaml:"limits"`
-	Drivers        map[string]yaml.Node   `yaml:"drivers"`
-	LicensePools   map[string]LicensePool `yaml:"license_pools"`
-	LogLevel       string                 `yaml:"log_level"`
+	AllowedSources []string `yaml:"allowed_sources"`
+	// GPU configures GPU sharing (render node, SR-IOV virtual functions).
+	GPU          gpu.Config             `yaml:"gpu"`
+	Limits       Limits                 `yaml:"limits"`
+	Drivers      map[string]yaml.Node   `yaml:"drivers"`
+	LicensePools map[string]LicensePool `yaml:"license_pools"`
+	LogLevel     string                 `yaml:"log_level"`
 
 	// Parsed limits.
 	RAMLimitMB     int64 `yaml:"-"`
@@ -107,6 +111,14 @@ func (c *Config) normalize() error {
 	}
 	if ip := net.ParseIP(c.ListenAddress); ip == nil {
 		errs = append(errs, fmt.Sprintf("listen_address %q is not an IP address", c.ListenAddress))
+	}
+	if c.GPU.SRIOV.PF != "" && !gpu.ValidPCI(c.GPU.SRIOV.PF) {
+		errs = append(errs, fmt.Sprintf("gpu.sriov.pf %q is not a PCI address like 0000:00:02.0", c.GPU.SRIOV.PF))
+	}
+	for _, v := range c.GPU.SRIOV.VFs {
+		if !gpu.ValidPCI(v) {
+			errs = append(errs, fmt.Sprintf("gpu.sriov.vfs: %q is not a PCI address", v))
+		}
 	}
 	if len(c.AllowedSources) == 0 {
 		c.AllowedSources = []string{"dashboard", "private"}

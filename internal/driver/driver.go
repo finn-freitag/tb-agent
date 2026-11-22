@@ -84,7 +84,43 @@ type Env struct {
 	// that enable adb authentication install it next to the user's keys so
 	// readiness checks can authenticate.
 	ADBPublicKey string
+	// GPU hands out the node's GPU (render node, SR-IOV VFs). May be nil.
+	GPU GPU
 }
+
+// GPU is implemented by internal/gpu.
+type GPU interface {
+	// RenderNode is the shared DRM render node ("" if none).
+	RenderNode() string
+	// VFs lists the SR-IOV virtual functions available to devices.
+	VFs() []string
+	// Acquire leases a virtual function to the device (idempotent).
+	Acquire(deviceID string) (string, error)
+	// Release frees the device's virtual function.
+	Release(deviceID string)
+}
+
+// Network policies (DeviceSpec.network_policy).
+const (
+	PolicyInternet = "internet"
+	PolicyOffline  = "offline"
+)
+
+// NetworkPolicy returns the spec's network policy ("" means internet) or an
+// error for unknown values.
+func NetworkPolicy(spec *agentv1.DeviceSpec) (string, error) {
+	switch p := spec.GetNetworkPolicy(); p {
+	case "", PolicyInternet:
+		return PolicyInternet, nil
+	case PolicyOffline:
+		return PolicyOffline, nil
+	default:
+		return "", fmt.Errorf("unknown network policy %q", p)
+	}
+}
+
+// WantsGPU reports whether the device should get a GPU.
+func WantsGPU(spec *agentv1.DeviceSpec) bool { return spec.GetResources().GetGpus() > 0 }
 
 // Factory creates a driver from its YAML config section (may be nil/empty).
 type Factory func(env Env, cfg *yaml.Node) (Driver, error)

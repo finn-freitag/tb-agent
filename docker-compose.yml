@@ -25,6 +25,7 @@ services:
       # - /dev/bus/usb:/dev/bus/usb
     # devices:
     #   - /dev/kvm    # only needed if a driver runs QEMU inside this container
+    #   - /dev/dri    # GPU sharing: lets the agent find the render node
     # privileged: true  # usb-phone driver
 
 volumes:

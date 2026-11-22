@@ -74,7 +74,30 @@ func (s *Store) Fetch(ctx context.Context, img *agentv1.ImageSpec, progress func
 	case strings.HasPrefix(u, "local:"):
 		return s.local(strings.TrimPrefix(u, "local:"), img.Sha256)
 	case strings.HasPrefix(u, "https://"), strings.HasPrefix(u, "http://"):
-		return s.download(ctx, u, img, progress)
+		kind := archiveKind(u)
+		if kind == "" {
+			return s.download(ctx, u, img, progress)
+		}
+		// Archives (e.g. ChromeOS .bin.zip, .tar.xz) are unpacked once; the
+		// archive is removed afterwards to save space. sha256 refers to the archive.
+		unpacked := s.CachePath(u) + ".img"
+		if _, err := os.Stat(unpacked); err == nil {
+			return unpacked, nil
+		}
+		arch, err := s.download(ctx, u, img, progress)
+		if err != nil {
+			return "", err
+		}
+		defer s.lock(unpacked)()
+		if _, err := os.Stat(unpacked); err == nil {
+			return unpacked, nil
+		}
+		s.log.Info("unpacking image", "url", u, "kind", kind)
+		if err := extract(kind, arch, unpacked); err != nil {
+			return "", fmt.Errorf("images: unpack %s: %w", u, err)
+		}
+		_ = os.Remove(arch)
+		return unpacked, nil
 	default:
 		return "", fmt.Errorf("images: unsupported image url %q (drivers handle docker:// oci:// incus: themselves)", u)
 	}

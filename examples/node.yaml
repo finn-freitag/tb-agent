@@ -24,6 +24,13 @@ listen_address: 0.0.0.0
 # Loopback and this host's own addresses always work.
 # allowed_sources: [dashboard, private]   # default
 
+# GPU sharing (see README "GPU sharing"). The render node is found
+# automatically; for SR-IOV name the GPU's physical function.
+# gpu:
+#   render_node: /dev/dri/renderD128
+#   sriov:
+#     pf: "0000:00:02.0"
+
 # Caps for all devices on this node together (other services need resources too).
 limits:
   ram: 16G
@@ -37,7 +44,9 @@ drivers:
     network: default        # libvirt network (or set bridge: br0)
     # isolate_ports: true   # default: VMs on the network can't reach each other
     storage_pool: default   # all device disks are created in this pool
-    families: [linux, windows]
+    families: [linux, windows, chromeos]
+    # gpu: virgl            # GPU for VMs that ask for one: virgl (shared 3D, Linux/ChromeOS) or sriov
+    # offline_network: tossbox-offline   # "offline" policy network (created automatically)
     # vnc_listen: 127.0.0.1
     # windows:
     #   secure_boot: true
@@ -45,6 +54,9 @@ drivers:
     #   loader: /usr/share/OVMF/OVMF_CODE_4M.secboot.fd    # default: libvirt auto-selection
     #   nvram_template: /usr/share/OVMF/OVMF_VARS_4M.ms.fd
     #   disk_bus: virtio
+
+  # Disposable browsers (Firefox/Chromium in containers, needs the Docker socket).
+  # browser: {}
 
   # Other drivers (see README):
   # docker-qemu: {}

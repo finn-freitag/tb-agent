@@ -3,6 +3,7 @@ package dockerqemu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -308,5 +309,40 @@ func TestLifecycle(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "devices", "d2")); !os.IsNotExist(err) {
 		t.Error("device dir not removed")
+	}
+}
+
+type fakeGPU struct{ node string }
+
+func (f fakeGPU) RenderNode() string             { return f.node }
+func (f fakeGPU) VFs() []string                  { return nil }
+func (f fakeGPU) Acquire(string) (string, error) { return "", errors.New("no VFs") }
+func (f fakeGPU) Release(string)                 {}
+
+func TestPlanOfflineGPU(t *testing.T) {
+	d := New(driver.Env{DataDir: "/data", GPU: fakeGPU{"/dev/dri/renderD128"}}, Config{})
+	spec := &agentv1.DeviceSpec{DeviceId: "d3", Hostname: "deb", NetworkPolicy: "offline",
+		Template: &agentv1.TemplateSpec{Id: "debian-13", Family: "linux", GuestProfile: "cloud-init", DefaultUser: "tossbox",
+			Image:  &agentv1.ImageSpec{Url: "docker://qemux/qemu", Format: "container"},
+			Params: map[string]string{"docker_qemu.boot_image": "https://x/debian.qcow2"}},
+		Resources: &agentv1.Resources{Vcpus: 2, RamMb: 1536, StorageGb: 20, Gpus: 1}}
+	p, err := d.plan(spec, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Offline || p.Config.HostConfig.NetworkMode != "tossbox-offline" {
+		t.Errorf("offline network not used: %+v", p.Config.HostConfig.NetworkMode)
+	}
+	if envOf(p.Config.Env, "GPU") != "Y" || p.Config.HostConfig.Devices[len(p.Config.HostConfig.Devices)-1].PathOnHost != "/dev/dri" {
+		t.Errorf("GPU not passed: %v %v", p.Config.Env, p.Config.HostConfig.Devices)
+	}
+	spec.Template.Family = "windows"
+	if _, err := d.plan(spec, ""); err == nil {
+		t.Error("GPU for Windows guests must be rejected")
+	}
+	spec.NetworkPolicy = "lan"
+	spec.Template.Family = "linux"
+	if _, err := d.plan(spec, ""); err == nil {
+		t.Error("unknown policy accepted")
 	}
 }

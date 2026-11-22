@@ -275,3 +275,13 @@ func TestIsolatedNICs(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+func TestOfflineNICs(t *testing.T) {
+	got := offlineNICs([]map[string]map[string]string{{"eth0": {"type": "nic", "network": "incusbr0", "name": "eth0"}}}, "tb-incus-off")
+	if len(got) != 1 || got["eth0"]["network"] != "tb-incus-off" || got["eth0"]["security.port_isolation"] != "true" {
+		t.Fatalf("%v", got)
+	}
+	if got := offlineNICs(nil, "x"); got["eth0"]["network"] != "x" {
+		t.Fatalf("default NIC missing: %v", got)
+	}
+}
