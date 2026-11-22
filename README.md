@@ -7,9 +7,9 @@ One agent runs per host (a homelab server, a spare PC, a Mac mini, a Pi with pho
 | Driver | Runs | Host | Status |
 |---|---|---|---|
 | `libvirt` | KVM VMs via the host's libvirt (Linux, Windows) | Linux | implemented, tested against real libvirt |
-| `docker-qemu` | one container per VM (QEMU in Docker, e.g. dockur/windows) | Linux + Docker | see `internal/driver/dockerqemu` |
-| `lxc` | Linux system containers via Incus | Linux + Incus | see `internal/driver/lxc` |
-| `android` | redroid / Cuttlefish | Linux | see `internal/driver/android` |
+| `docker-qemu` | one container per VM (QEMU in Docker, e.g. dockur/windows) | Linux + Docker | tested (Linux + Windows guests) |
+| `lxc` | Linux system containers via Incus | Linux + Incus | tested with Incus 6.0 |
+| `android` | redroid / Cuttlefish | Linux | redroid tested; Cuttlefish unit tested |
 | `orchard` | macOS VMs via Orchard/Tart (2 per Mac) | macOS | see `internal/driver/orchard` |
 | `usb-phone` | physical phones over USB | Linux/macOS | see `internal/driver/usbphone` |
 

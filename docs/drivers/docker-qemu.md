@@ -5,7 +5,7 @@ Runs one Docker container per VM, with QEMU inside the container:
 - **Windows:** [dockur/windows](https://github.com/dockur/windows) (`dockurr/windows`)
 - **Linux and other disk images:** [qemus/qemu](https://github.com/qemus/qemu) (`qemux/qemu`)
 
-Status: implemented and unit tested against a fake Docker API. **Not tested against a real Docker host yet.**
+Status: tested on a real Docker 29 host (Ubuntu 26.04): Debian, Fedora and Windows 11 (dockurr) guests.
 
 ## Requirements
 

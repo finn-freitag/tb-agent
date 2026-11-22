@@ -7,7 +7,7 @@ Virtual Android devices with two sub-backends:
 
 The backend is chosen by the device param `backend`, otherwise the template param `android.backend`, otherwise `default_backend`. An existing device always stays on the backend it was created with.
 
-Status: implemented and unit tested (fake Docker API, fake `launch_cvd`). **Not tested against real redroid or Cuttlefish yet.**
+Status: **redroid tested** (Android 15 `_64only` image on Ubuntu 26.04, kernel 7.0 with binderfs only, i.e. no `/dev/binder` nodes: boot, adb through the gateway, internet, delete). Cuttlefish is unit tested only (fake `launch_cvd`).
 
 ## Config
 

@@ -2,7 +2,9 @@
 
 Linux system containers, and optionally Incus VMs, through the [Incus](https://linuxcontainers.org/incus/) REST API on its unix socket.
 
-Status: tested against Incus 6.0.5 on Ubuntu 26.04 (Debian 13 cloud container: boot, cloud-init, SSH through the gateway, delete).
+Status: tested against Incus 6.0.5 on Ubuntu 26.04 (Debian 13 and Alpine 3.24 cloud containers: boot, cloud-init, SSH through the gateway, delete).
+
+**Storage limit:** the root disk `size` is only enforced by storage pools that support quotas (zfs, btrfs, lvm). On a `dir` pool (what `incus admin init --minimal` creates) the container sees the whole host filesystem.
 
 **Nesting:** Ubuntu 24.04+ hosts set `kernel.apparmor_restrict_unprivileged_userns=1`. systemd 257+ inside a container then hangs at boot (services stuck in `(sd-mkuserns)`, no DHCP lease) unless `security.nesting=true`. The driver therefore sets it on every container by default; override it via `container_config`.
 
