@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/ulikunitz/xz"
@@ -36,6 +39,13 @@ func archiveKind(url string) string {
 // archives the largest regular file is the disk image. Zero blocks are
 // skipped, so dst stays sparse.
 func extract(kind, archive, dst string) error {
+	if strings.HasPrefix(kind, "tar.") {
+		if _, err := exec.LookPath("tar"); err == nil {
+			// GNU tar: handles large GNU sparse maps (Go's archive/tar refuses
+			// them, e.g. ChromiumOS images) and keeps the output sparse.
+			return extractWithTar(kind, archive, dst)
+		}
+	}
 	tmp := dst + ".extract"
 	out, err := os.Create(tmp)
 	if err != nil {
@@ -165,4 +175,41 @@ func copySparse(dst *os.File, src io.Reader, size int64) error {
 		return fmt.Errorf("images: archive entry truncated (%d of %d bytes)", off, size)
 	}
 	return dst.Truncate(off)
+}
+
+// extractWithTar unpacks a tar archive with the tar binary into a temporary
+// directory and moves its largest regular file to dst.
+func extractWithTar(kind, archive, dst string) error {
+	dir := dst + ".extract.d"
+	_ = os.RemoveAll(dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	flag := "-J"
+	if kind == "tar.gz" {
+		flag = "-z"
+	}
+	cmd := exec.Command("tar", "-x", flag, "--no-same-owner", "-f", archive, "-C", dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var best string
+	var size int64 = -1
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		if fi, err := d.Info(); err == nil && fi.Size() > size {
+			best, size = p, fi.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if best == "" {
+		return errors.New("images: no file in tar archive")
+	}
+	return os.Rename(best, dst)
 }

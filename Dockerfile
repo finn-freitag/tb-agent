@@ -15,7 +15,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 FROM debian:trixie-slim
 # adb/fastboot/usbutils: android + usb-phone drivers; qemu-utils: image inspection.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates qemu-utils adb fastboot usbutils \
+ && apt-get install -y --no-install-recommends ca-certificates qemu-utils adb fastboot usbutils tar xz-utils \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/tb-agent /usr/local/bin/tb-agent
 VOLUME /var/lib/tb-agent
