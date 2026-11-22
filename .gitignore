@@ -1,0 +1,4 @@
+/dist/
+/tb-agent
+node.local.yaml
+.direnv/

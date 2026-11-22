@@ -1,0 +1,31 @@
+# tb-agent on a Linux node.
+#
+# 1. Create the node in the Tossbox dashboard (Nodes -> Add node) and copy
+#    the enrollment token.
+# 2. cp examples/node.yaml node.yaml and fill in dashboard.endpoint/token,
+#    limits and the drivers you want.
+# 3. docker compose up -d
+services:
+  tb-agent:
+    image: ghcr.io/finn-freitag/tb-agent:latest
+    container_name: tb-agent
+    restart: unless-stopped
+    # Forwarded device ports are opened directly on the host.
+    network_mode: host
+    volumes:
+      - ./node.yaml:/etc/tb-agent/node.yaml:ro
+      - tb-agent-data:/var/lib/tb-agent
+      # libvirt driver: the host's libvirt daemon socket.
+      - /var/run/libvirt:/var/run/libvirt
+      # docker-qemu / android (redroid) drivers: the host's Docker daemon.
+      # - /var/run/docker.sock:/var/run/docker.sock
+      # lxc driver: the host's Incus daemon.
+      # - /var/lib/incus/unix.socket:/var/lib/incus/unix.socket
+      # usb-phone driver: USB devices (also set privileged: true below).
+      # - /dev/bus/usb:/dev/bus/usb
+    # devices:
+    #   - /dev/kvm    # only needed if a driver runs QEMU inside this container
+    # privileged: true  # usb-phone driver
+
+volumes:
+  tb-agent-data:

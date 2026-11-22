@@ -1,0 +1,54 @@
+# Tossbox node config (tb-agent).
+name: homelab
+
+dashboard:
+  # Where the agent reaches the dashboard's gRPC listener (TOSSBOX_GRPC_LISTEN).
+  endpoint: dashboard.example.com:7443
+  # One-time enrollment token from the dashboard (Nodes -> Add node). After the
+  # first successful start the agent uses the certificates in data_dir; put a
+  # new token here to re-enroll.
+  token: tb1.<ca-fingerprint>.<secret>
+
+# Persistent state: certificates, desired device state, image cache, leases.
+data_dir: /var/lib/tb-agent
+
+# Address forwarded device ports bind to. The dashboard gateway connects to
+# <node address>:<port>, so this must be reachable from the dashboard host
+# (e.g. 0.0.0.0, or the node's Tailscale IP).
+listen_address: 0.0.0.0
+
+# Caps for all devices on this node together (other services need resources too).
+limits:
+  ram: 16G
+  cpu: 70%
+  storage: 300G
+
+drivers:
+  # KVM VMs through the host's libvirt (Linux + Windows guests).
+  libvirt:
+    socket: /var/run/libvirt/libvirt-sock
+    network: default        # libvirt network (or set bridge: br0)
+    storage_pool: default   # all device disks are created in this pool
+    families: [linux, windows]
+    # vnc_listen: 127.0.0.1
+    # windows:
+    #   secure_boot: true
+    #   tpm: true            # requires swtpm on the host
+    #   loader: /usr/share/OVMF/OVMF_CODE_4M.secboot.fd    # default: libvirt auto-selection
+    #   nvram_template: /usr/share/OVMF/OVMF_VARS_4M.ms.fd
+    #   disk_bus: virtio
+
+  # Other drivers (see README):
+  # docker-qemu: {}
+  # lxc: {}
+  # android: {}
+  # orchard: {}
+  # usb-phone: {}
+
+# Windows product keys. Keys never leave this node; the dashboard only sees
+# pool names and free counts.
+license_pools: {}
+#  win-retail-pro:
+#    type: retail      # retail | mak | kms
+#    keys:
+#      - XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
