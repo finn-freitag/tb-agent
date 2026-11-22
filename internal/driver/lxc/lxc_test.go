@@ -69,6 +69,9 @@ func TestBuildCreate(t *testing.T) {
 	if b.Devices["root"]["size"] != "10GiB" || b.Config[keyDevice] != "d1" {
 		t.Fatalf("%+v", b.Devices)
 	}
+	if b.Config["security.nesting"] != "true" {
+		t.Errorf("security.nesting = %q, want true by default", b.Config["security.nesting"])
+	}
 	ud := b.Config["cloud-init.user-data"]
 	if !strings.Contains(ud, "pw-abcdefghijklmnopqrst") || !strings.Contains(ud, "ssh-ed25519 AAAA test") {
 		t.Fatalf("user data: %s", ud)

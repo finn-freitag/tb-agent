@@ -48,6 +48,11 @@ type Config struct {
 	Remotes     map[string]string `yaml:"remotes"`
 	AllowVMs    bool              `yaml:"allow_vms"`
 	StopTimeout time.Duration     `yaml:"stop_timeout"`
+	// ContainerConfig is extra Incus instance config applied to every
+	// container (not VMs). Default: security.nesting=true, which current
+	// systemd (257+) needs to boot on hosts that restrict unprivileged user
+	// namespaces via AppArmor (e.g. Ubuntu 24.04+). Set a key to override.
+	ContainerConfig map[string]string `yaml:"container_config"`
 }
 
 func (c *Config) defaults() {
@@ -68,6 +73,12 @@ func (c *Config) defaults() {
 	}
 	if _, ok := c.Remotes["images"]; !ok {
 		c.Remotes["images"] = "https://images.linuxcontainers.org"
+	}
+	if c.ContainerConfig == nil {
+		c.ContainerConfig = map[string]string{}
+	}
+	if _, ok := c.ContainerConfig["security.nesting"]; !ok {
+		c.ContainerConfig["security.nesting"] = "true"
 	}
 	if c.StopTimeout == 0 {
 		c.StopTimeout = 30 * time.Second
@@ -160,11 +171,19 @@ func (d *Driver) buildCreate(spec *agentv1.DeviceSpec) (instancesPost, error) {
 		return instancesPost{}, err
 	}
 	res := spec.GetResources()
-	cfg := map[string]string{
+	cfg := map[string]string{}
+	if typ == "container" {
+		for k, v := range d.cfg.ContainerConfig {
+			cfg[k] = v
+		}
+	}
+	for k, v := range map[string]string{
 		keyDevice:               spec.DeviceId,
 		keyDriver:               name,
 		"user.tossbox.template": tpl.GetId(),
 		"cloud-init.user-data":  string(seed.UserData),
+	} {
+		cfg[k] = v
 	}
 	if v := res.GetVcpus(); v > 0 {
 		cfg["limits.cpu"] = fmt.Sprint(v)

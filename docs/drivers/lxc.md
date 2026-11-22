@@ -2,7 +2,9 @@
 
 Linux system containers, and optionally Incus VMs, through the [Incus](https://linuxcontainers.org/incus/) REST API on its unix socket.
 
-Status: implemented and unit tested against a fake Incus API. **Not tested against a real Incus daemon yet.**
+Status: tested against Incus 6.0.5 on Ubuntu 26.04 (Debian 13 cloud container: boot, cloud-init, SSH through the gateway, delete).
+
+**Nesting:** Ubuntu 24.04+ hosts set `kernel.apparmor_restrict_unprivileged_userns=1`. systemd 257+ inside a container then hangs at boot (services stuck in `(sd-mkuserns)`, no DHCP lease) unless `security.nesting=true`. The driver therefore sets it on every container by default; override it via `container_config`.
 
 ## Config
 
@@ -17,6 +19,8 @@ drivers:
       images: https://images.linuxcontainers.org
     allow_vms: false              # allow templates with param lxc.type=virtual-machine
     stop_timeout: 30s
+    container_config:             # extra Incus config for every container
+      security.nesting: "true"    # default; needed by systemd 257+ on Ubuntu hosts
 ```
 
 The agent needs access to the Incus socket (member of the `incus-admin` group, or mount the socket when running in a container).
