@@ -73,6 +73,9 @@ func TestBuildCreate(t *testing.T) {
 		t.Errorf("security.nesting = %q, want true by default", b.Config["security.nesting"])
 	}
 	ud := b.Config["cloud-init.user-data"]
+	if !strings.Contains(ud, "openssh-server") || strings.Contains(ud, "qemu-guest-agent") {
+		t.Errorf("container user-data should install openssh-server and skip qemu-guest-agent:\n%s", ud)
+	}
 	if !strings.Contains(ud, "pw-abcdefghijklmnopqrst") || !strings.Contains(ud, "ssh-ed25519 AAAA test") {
 		t.Fatalf("user data: %s", ud)
 	}

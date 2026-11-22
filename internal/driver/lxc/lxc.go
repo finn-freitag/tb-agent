@@ -166,6 +166,9 @@ func (d *Driver) buildCreate(spec *agentv1.DeviceSpec) (instancesPost, error) {
 	seed, err := cloudinit.Linux(cloudinit.Params{
 		InstanceID: spec.DeviceId, Hostname: spec.GetHostname(), User: user, Password: password,
 		SSHKeys: spec.GetSshAuthorizedKeys(),
+		// images: cloud variants have cloud-init but no SSH server.
+		Packages:     strings.Fields(strings.ReplaceAll(cmpOr(params["lxc.packages"], "openssh-server"), ",", " ")),
+		NoGuestAgent: typ == "container",
 	})
 	if err != nil {
 		return instancesPost{}, err
@@ -373,4 +376,11 @@ func credentials(spec *agentv1.DeviceSpec) (user, password string) {
 		user = "tossbox"
 	}
 	return user, password
+}
+
+func cmpOr(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
 }

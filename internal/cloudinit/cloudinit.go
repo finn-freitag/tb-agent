@@ -21,6 +21,9 @@ type Params struct {
 	ProductKey string // Windows only, may be empty
 	// Packages are extra packages for Linux guests (best effort).
 	Packages []string
+	// NoGuestAgent skips qemu-guest-agent (containers have no virtio port;
+	// enabling it there only blocks cloud-init until systemd times out).
+	NoGuestAgent bool
 }
 
 // Seed holds the NoCloud files.
@@ -61,7 +64,16 @@ func Linux(p Params) (Seed, error) {
 	if len(p.SSHKeys) > 0 {
 		user["ssh_authorized_keys"] = p.SSHKeys
 	}
-	pkgs := append([]string{"qemu-guest-agent"}, p.Packages...)
+	var pkgs []string
+	runcmd := []any{
+		// Some images ship sshd drop-ins that disable password logins.
+		[]string{"sh", "-c", "rm -f /etc/ssh/sshd_config.d/*-cloudimg-settings.conf; mkdir -p /etc/ssh/sshd_config.d; printf 'PasswordAuthentication yes\\n' > /etc/ssh/sshd_config.d/00-tossbox.conf; for s in ssh sshd; do systemctl enable $s 2>/dev/null; systemctl restart $s 2>/dev/null; rc-update add $s 2>/dev/null; rc-service $s restart 2>/dev/null; done; true"},
+	}
+	if !p.NoGuestAgent {
+		pkgs = append(pkgs, "qemu-guest-agent")
+		runcmd = append(runcmd, []string{"sh", "-c", "systemctl enable --now --no-block qemu-guest-agent 2>/dev/null || true"})
+	}
+	pkgs = append(pkgs, p.Packages...)
 	cfg := map[string]any{
 		"hostname":         p.Hostname,
 		"manage_etc_hosts": true,
@@ -72,11 +84,7 @@ func Linux(p Params) (Seed, error) {
 		},
 		"ssh_pwauth": true,
 		"packages":   pkgs,
-		"runcmd": []any{
-			// Some images ship sshd drop-ins that disable password logins.
-			[]string{"sh", "-c", "rm -f /etc/ssh/sshd_config.d/*-cloudimg-settings.conf; printf 'PasswordAuthentication yes\\n' > /etc/ssh/sshd_config.d/00-tossbox.conf; systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true"},
-			[]string{"sh", "-c", "systemctl enable --now qemu-guest-agent 2>/dev/null || true"},
-		},
+		"runcmd":     runcmd,
 	}
 	body, err := yaml.Marshal(cfg)
 	if err != nil {
