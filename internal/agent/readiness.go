@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -25,10 +26,37 @@ func checkReady(ctx context.Context, kind, endpoint string) bool {
 		return false
 	}
 	defer c.Close()
-	if kind != "ssh" {
-		return true // rdp, adb: TCP connect is enough
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	switch kind {
+	case "ssh":
+		line, err := bufio.NewReader(c).ReadString('\n')
+		return err == nil && strings.HasPrefix(line, "SSH-")
+	case "rdp":
+		return rdpAnswers(c)
+	default:
+		return true // adb, vnc, http(s): TCP connect is enough
 	}
-	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	line, err := bufio.NewReader(c).ReadString('\n')
-	return err == nil && strings.HasPrefix(line, "SSH-")
+}
+
+// rdpConnectionRequest is a TPKT + X.224 Connection Request carrying an RDP
+// Negotiation Request (TLS | CredSSP), [MS-RDPBCGR] 2.2.1.1.
+var rdpConnectionRequest = []byte{
+	0x03, 0x00, 0x00, 0x13, // TPKT v3, length 19
+	0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, // X.224 CR TPDU
+	0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00, // RDP_NEG_REQ
+}
+
+// rdpAnswers reports whether a real RDP server answers on c. Port forwarders
+// (e.g. QEMU user networking in docker-qemu) accept TCP connections even
+// while Windows is still installing, so a plain connect is not enough.
+func rdpAnswers(c net.Conn) bool {
+	if _, err := c.Write(rdpConnectionRequest); err != nil {
+		return false
+	}
+	var hdr [6]byte
+	if _, err := io.ReadFull(c, hdr[:]); err != nil {
+		return false
+	}
+	// TPKT version 3, X.224 length indicator, then Connection Confirm (0xd0).
+	return hdr[0] == 0x03 && hdr[1] == 0x00 && hdr[5]&0xf0 == 0xd0
 }

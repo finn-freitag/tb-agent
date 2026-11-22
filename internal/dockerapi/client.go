@@ -332,6 +332,30 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (*ContainerInf
 	return &out, nil
 }
 
+// ContainerMemoryMB returns the container's current memory use in MiB
+// (cgroup usage minus reclaimable page cache, like `docker stats`).
+func (c *Client) ContainerMemoryMB(ctx context.Context, id string) (int64, error) {
+	var out struct {
+		MemoryStats struct {
+			Usage uint64            `json:"usage"`
+			Stats map[string]uint64 `json:"stats"`
+		} `json:"memory_stats"`
+	}
+	q := url.Values{"stream": {"false"}, "one-shot": {"true"}}
+	if err := c.doJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/stats", q, nil, &out); err != nil {
+		return 0, err
+	}
+	used := out.MemoryStats.Usage
+	cache := out.MemoryStats.Stats["inactive_file"] // cgroup v2
+	if cache == 0 {
+		cache = out.MemoryStats.Stats["total_inactive_file"] // cgroup v1
+	}
+	if cache < used {
+		used -= cache
+	}
+	return int64(used >> 20), nil
+}
+
 // ContainerSummary is an entry of GET /containers/json.
 type ContainerSummary struct {
 	ID     string            `json:"Id"`

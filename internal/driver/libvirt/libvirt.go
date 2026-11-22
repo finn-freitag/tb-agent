@@ -612,6 +612,14 @@ func (d *Driver) status(lv *golibvirt.Libvirt, dom golibvirt.Domain, deviceID st
 	}
 	if s.State == agentv1.DeviceState_DEVICE_STATE_RUNNING {
 		s.InternalIp = d.ipOf(lv, dom)
+		// RSS of the QEMU process: what the VM really takes from the host.
+		if stats, err := lv.DomainMemoryStats(dom, uint32(golibvirt.DomainMemoryStatNr), 0); err == nil {
+			for _, m := range stats {
+				if m.Tag == int32(golibvirt.DomainMemoryStatRss) {
+					s.MemoryUsedMb = int64(m.Val >> 10) // KiB
+				}
+			}
+		}
 	}
 	if pool, err := lv.StoragePoolLookupByName(d.cfg.StoragePool); err == nil {
 		if vol, err := lv.StorageVolLookupByName(pool, diskName(deviceID)); err == nil {

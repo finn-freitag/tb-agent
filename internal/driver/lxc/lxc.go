@@ -307,6 +307,7 @@ func (d *Driver) Status(ctx context.Context, deviceID string) (*agentv1.DeviceSt
 	if root, ok := st.Disk["root"]; ok {
 		out.StorageUsedMb = root.Usage >> 20
 	}
+	out.MemoryUsedMb = st.Memory.Usage >> 20
 	return out, nil
 }
 

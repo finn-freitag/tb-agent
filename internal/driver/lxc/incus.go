@@ -170,6 +170,9 @@ type instanceState struct {
 	Disk map[string]struct {
 		Usage int64 `json:"usage"`
 	} `json:"disk"`
+	Memory struct {
+		Usage int64 `json:"usage"`
+	} `json:"memory"`
 }
 
 func (c *incusClient) create(ctx context.Context, body instancesPost) error {

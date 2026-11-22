@@ -26,6 +26,32 @@ func RAMMB() int64 {
 	return 0
 }
 
+// RAMUsedMB returns host memory in use (MemTotal - MemAvailable) in MiB.
+func RAMUsedMB() int64 {
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	var total, avail int64
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		v, _ := strconv.ParseInt(f[1], 10, 64)
+		switch f[0] {
+		case "MemTotal:":
+			total = v
+		case "MemAvailable:":
+			avail = v
+		}
+	}
+	if total == 0 || avail > total {
+		return 0
+	}
+	return (total - avail) / 1024
+}
+
 var (
 	cpuMu               sync.Mutex
 	lastIdle, lastTotal uint64

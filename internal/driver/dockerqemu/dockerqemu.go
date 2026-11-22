@@ -453,6 +453,9 @@ func (d *Driver) Status(ctx context.Context, deviceID string) (*agentv1.DeviceSt
 	st.State = containerState(ci.State.Status)
 	if ci.State.Running {
 		st.InternalIp = ci.IP(d.cfg.Network)
+		if mb, err := d.docker.ContainerMemoryMB(ctx, ci.ID); err == nil {
+			st.MemoryUsedMb = mb
+		}
 	}
 	d.mu.Lock()
 	st.Message = d.messages[deviceID]

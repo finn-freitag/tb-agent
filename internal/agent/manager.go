@@ -40,6 +40,7 @@ type device struct {
 
 	status    *agentv1.DeviceStatus
 	readyAt   time.Time
+	everReady bool // passed readiness at least once (first-boot messages are stale after that)
 	destroyed bool
 }
 
@@ -166,8 +167,8 @@ func (m *Manager) Usage() (ramMB, storageMB int64) {
 	for _, d := range m.devices {
 		if d.status != nil {
 			storageMB += d.status.StorageUsedMb
-			if d.status.State == agentv1.DeviceState_DEVICE_STATE_RUNNING && d.spec != nil {
-				ramMB += d.spec.GetResources().GetRamMb()
+			if d.status.State == agentv1.DeviceState_DEVICE_STATE_RUNNING {
+				ramMB += d.status.MemoryUsedMb
 			}
 		}
 	}
@@ -429,6 +430,7 @@ func (m *Manager) refresh(ctx context.Context, d *device) {
 	}
 	prev := m.statusLocked(d)
 	readyAt := d.readyAt
+	everReady := d.everReady
 	failed := d.status != nil && d.status.State == agentv1.DeviceState_DEVICE_STATE_FAILED && !d.retryAt.IsZero()
 	m.mu.Unlock()
 	if drv == nil || failed {
@@ -471,9 +473,13 @@ func (m *Manager) refresh(ctx context.Context, d *device) {
 				readyAt = time.Now()
 			}
 		}
-		if st.Ready && st.Message == "Booting" {
+		// Drivers keep their last provisioning message (e.g. "Installing
+		// Windows"); it no longer applies once the guest answered.
+		switch {
+		case st.Ready:
 			st.Message = ""
-		} else if !st.Ready && st.Message == "" {
+			everReady = true
+		case st.Message == "" || everReady:
 			st.Message = "Booting"
 		}
 	}
@@ -485,6 +491,7 @@ func (m *Manager) refresh(ctx context.Context, d *device) {
 		return
 	}
 	d.readyAt = readyAt
+	d.everReady = everReady
 	m.setStatusLocked(d, st)
 	if spec != nil && d.ensured && powerMismatch(spec, st) {
 		m.kickLocked(d)

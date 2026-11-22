@@ -236,6 +236,9 @@ func (r *redroid) status(ctx context.Context, id string) (*agentv1.DeviceStatus,
 	case "running", "restarting":
 		st.State = agentv1.DeviceState_DEVICE_STATE_RUNNING
 		st.InternalIp = ci.IP(r.cfg.Network)
+		if mb, err := r.docker.ContainerMemoryMB(ctx, ci.ID); err == nil {
+			st.MemoryUsedMb = mb
+		}
 	case "created":
 		st.State = agentv1.DeviceState_DEVICE_STATE_PENDING
 	case "exited", "paused":

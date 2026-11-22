@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
+	"github.com/finn-freitag/tb-agent/internal/hostinfo"
 	"github.com/finn-freitag/tb-agent/internal/version"
 )
 
@@ -260,8 +261,10 @@ func (a *Agent) session(ctx context.Context) error {
 			out = m
 		case <-hb.C:
 			ram, storage := a.mgr.Usage()
+			hostTotal, hostFree := hostinfo.StorageGB(a.cfg.DataDir)
 			out = &agentv1.AgentMessage{Msg: &agentv1.AgentMessage_Heartbeat{Heartbeat: &agentv1.Heartbeat{Usage: &agentv1.ResourceUsage{
 				RamUsedMb: ram, CpuUsedPercent: a.cpuPercent(), StorageUsedGb: storage / 1024,
+				HostRamUsedMb: hostinfo.RAMUsedMB(), HostStorageUsedGb: hostTotal - hostFree, HostStorageTotalGb: hostTotal,
 			}}}}
 		case <-capT.C:
 			if c := a.capabilities(ctx); !protoEqual(c, caps) {
