@@ -221,17 +221,28 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 	if d.cfg.Bridge == "" {
 		caps.NetworkPolicies = append(caps.NetworkPolicies, driver.PolicyOffline)
 	}
+	// A configured but unavailable GPU only disables GPU devices; the
+	// message tells the admin why (Nodes page).
+	gpuNote := ""
 	switch d.cfg.GPU {
 	case "virgl":
 		if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
 			caps.GpuMode, caps.GpuSlots = "virgl", -1
+		} else {
+			gpuNote = "gpu: virgl configured, but no render node found (mount /dev/dri into the agent container)"
 		}
 	case "sriov":
-		if d.env.GPU != nil {
-			if n := len(d.env.GPU.VFs()); n > 0 {
-				caps.GpuMode, caps.GpuSlots = "sriov", int32(n)
-			}
+		if d.env.GPU != nil && len(d.env.GPU.VFs()) > 0 {
+			caps.GpuMode, caps.GpuSlots = "sriov", int32(len(d.env.GPU.VFs()))
+		} else {
+			gpuNote = "gpu: sriov configured, but no SR-IOV virtual functions found (gpu.sriov.pf/vfs, see deploy/host-gpu.sh)"
 		}
+	}
+	if gpuNote != "" {
+		if caps.Message != "" {
+			caps.Message += "; "
+		}
+		caps.Message += gpuNote
 	}
 	return caps
 }

@@ -143,12 +143,13 @@ func (f *fakeIncus) handler(t *testing.T) http.Handler {
 		f.mu.Unlock()
 		sync200(w, nil)
 	})
-	mux.HandleFunc("GET /1.0/instances/{name}/files", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("HEAD /1.0/instances/{name}/files", func(w http.ResponseWriter, r *http.Request) {
+		// Like Incus: the raw file, not the JSON envelope.
 		if r.URL.Query().Get("path") == "/run/cloud-init/result.json" {
-			w.Write([]byte("{}"))
+			w.Header().Set("Content-Type", "application/octet-stream")
 			return
 		}
-		notFound(w)
+		w.WriteHeader(404)
 	})
 	mux.HandleFunc("PATCH /1.0/instances/{name}", func(w http.ResponseWriter, r *http.Request) {
 		var b struct {

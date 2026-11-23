@@ -42,6 +42,12 @@ func TestManager(t *testing.T) {
 	if got, _ := m2.Acquire("d2"); got != b {
 		t.Fatalf("lease lost: %s", got)
 	}
+	if got := m2.Prune(func(id string) bool { return id != "d2" }); len(got) != 1 || got[0] != "d2" {
+		t.Fatalf("prune: %v", got)
+	}
+	if got, _ := m2.Acquire("d2"); got != b {
+		t.Fatalf("pruned VF not reusable: %s", got)
+	}
 	m2.Release("d1")
 	if got, _ := m2.Acquire("d3"); got != a {
 		t.Fatalf("released VF not reused: %s", got)

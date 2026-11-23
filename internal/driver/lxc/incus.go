@@ -160,12 +160,30 @@ type instance struct {
 }
 
 // fileExists reports whether a file exists inside a running instance.
+// The files endpoint answers with the raw file, not the JSON envelope, so
+// only the status of a HEAD request is used.
 func (c *incusClient) fileExists(ctx context.Context, name, path string) (bool, error) {
-	_, err := c.do(ctx, http.MethodGet, "/1.0/instances/"+url.PathEscape(name)+"/files", url.Values{"path": {path}}, nil)
-	if errors.Is(err, errNotFound) {
-		return false, nil
+	q := url.Values{"path": {path}}
+	if c.project != "" && c.project != "default" {
+		q.Set("project", c.project)
 	}
-	return err == nil, err
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, c.base+"/1.0/instances/"+url.PathEscape(name)+"/files?"+q.Encode(), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return false, err
+	}
+	resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return true, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("incus: HEAD %s files: HTTP %d", name, resp.StatusCode)
+	}
 }
 
 // patch updates config keys and devices of an instance (devices given here

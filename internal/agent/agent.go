@@ -79,6 +79,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Agent, error) {
 	a.sources = NewSourceFilter(cfg.AllowedSources, cfg.Dashboard.Endpoint, log.With("component", "forward"))
 	a.fwd = NewForwarder(cfg.ListenAddress, a.sources, log.With("component", "forward"))
 	a.mgr = NewManager(log.With("component", "reconciler"), a.drivers, lic, newStore(cfg.DataDir), a.fwd)
+	a.mgr.gpu = gpus
 	a.mgr.adbKey = adbKey
 	return a, nil
 }

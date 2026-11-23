@@ -141,6 +141,28 @@ func (m *Manager) Acquire(deviceID string) (string, error) {
 	return "", errors.New("gpu: no free SR-IOV virtual function on this node")
 }
 
+// Prune releases the leases of devices for which keep returns false (e.g.
+// devices deleted while the agent wasn't running) and returns their IDs.
+func (m *Manager) Prune(keep func(deviceID string) bool) []string {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for id := range m.leases {
+		if !keep(id) {
+			delete(m.leases, id)
+			out = append(out, id)
+		}
+	}
+	if len(out) > 0 {
+		_ = m.save()
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Release frees the device's virtual function (no-op without one).
 func (m *Manager) Release(deviceID string) {
 	if m == nil {

@@ -1,8 +1,12 @@
 package libvirt
 
 import (
+	"context"
+	"path/filepath"
+
 	"encoding/xml"
 	golibvirt "github.com/digitalocean/go-libvirt"
+	"github.com/finn-freitag/tb-agent/internal/driver"
 	"strings"
 	"testing"
 )
@@ -69,5 +73,45 @@ func TestOfflineNetworkXML(t *testing.T) {
 func TestIsNoNetwork(t *testing.T) {
 	if !isNoNetwork(golibvirt.Error{Code: uint32(golibvirt.ErrNoNetwork)}) || isNoNetwork(golibvirt.Error{Code: uint32(golibvirt.ErrNoDomain)}) {
 		t.Fatal("isNoNetwork")
+	}
+}
+
+type fakeGPU struct {
+	node string
+	vfs  []string
+}
+
+func (f fakeGPU) RenderNode() string             { return f.node }
+func (f fakeGPU) VFs() []string                  { return f.vfs }
+func (f fakeGPU) Acquire(string) (string, error) { return "", nil }
+func (f fakeGPU) Release(string)                 {}
+
+func TestCapabilitiesGPU(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "none.sock") // no libvirt: unhealthy, GPU fields still reported
+	cases := []struct {
+		gpu   string
+		env   fakeGPU
+		mode  string
+		slots int32
+		note  string
+	}{
+		{"sriov", fakeGPU{vfs: []string{"0000:00:02.1", "0000:00:02.2"}}, "sriov", 2, ""},
+		{"sriov", fakeGPU{}, "", 0, "no SR-IOV virtual functions"},
+		{"virgl", fakeGPU{node: "/dev/dri/renderD128"}, "virgl", -1, ""},
+		{"virgl", fakeGPU{}, "", 0, "no render node"},
+		{"", fakeGPU{node: "/dev/dri/renderD128"}, "", 0, ""},
+	}
+	for _, c := range cases {
+		d, err := New(driver.Env{GPU: c.env}, Config{Socket: sock, GPU: c.gpu})
+		if err != nil {
+			t.Fatal(err)
+		}
+		caps := d.Capabilities(context.Background())
+		if caps.GpuMode != c.mode || caps.GpuSlots != c.slots || (c.note != "") != strings.Contains(caps.Message, "gpu:") || !strings.Contains(caps.Message, c.note) {
+			t.Errorf("%s %+v: mode=%q slots=%d msg=%q", c.gpu, c.env, caps.GpuMode, caps.GpuSlots, caps.Message)
+		}
+	}
+	if _, err := New(driver.Env{}, Config{GPU: "cuda"}); err == nil {
+		t.Error("unknown gpu mode accepted")
 	}
 }

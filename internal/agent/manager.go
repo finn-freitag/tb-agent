@@ -53,6 +53,10 @@ type Manager struct {
 	licenses driver.Licenses
 	store    *Store
 	fwd      *Forwarder
+	// gpu leases are pruned at startup for devices that no longer exist.
+	gpu interface {
+		Prune(keep func(deviceID string) bool) []string
+	}
 	// adbKey answers adb AUTH challenges in readiness checks (nil = none).
 	adbKey *adbkey.Key
 
@@ -89,10 +93,12 @@ func (m *Manager) Start(ctx context.Context) error {
 		d.spec, d.deleting = p.Spec, p.Deleting
 	}
 	m.mu.Unlock()
+	listed := true
 	for name, drv := range m.drivers {
 		list, err := drv.List(ctx)
 		if err != nil {
 			m.log.Warn("cannot list devices", "driver", name, "err", err)
+			listed = false
 			continue
 		}
 		m.mu.Lock()
@@ -105,6 +111,16 @@ func (m *Manager) Start(ctx context.Context) error {
 			d.status = st
 		}
 		m.mu.Unlock()
+	}
+	if listed && m.gpu != nil {
+		// Only when every driver could list its devices: otherwise a
+		// device of an unreachable driver would lose its GPU.
+		m.mu.Lock()
+		released := m.gpu.Prune(func(id string) bool { _, ok := m.devices[id]; return ok })
+		m.mu.Unlock()
+		for _, id := range released {
+			m.log.Info("released GPU lease of a device that no longer exists", "device", id)
+		}
 	}
 	m.mu.Lock()
 	for _, d := range m.devices {
