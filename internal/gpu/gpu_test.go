@@ -25,6 +25,13 @@ func TestManager(t *testing.T) {
 	if got := m.RenderNode(); got != filepath.Join(root, "dev", "dri", "renderD128") {
 		t.Fatalf("render node %q", got)
 	}
+	vf := filepath.Join(root, "sys", "bus", "pci", "devices", "0000:00:02.1")
+	os.MkdirAll(vf, 0o755)
+	os.WriteFile(filepath.Join(vf, "device"), []byte("0x4692\n"), 0o644)
+	os.WriteFile(filepath.Join(vf, "vendor"), []byte("0x8086\n"), 0o644)
+	if m.DeviceID("0000:00:02.1") != "4692" || !m.IntelVendor("0000:00:02.1") || m.IntelVendor("0000:00:02.2") {
+		t.Fatalf("device info: %q", m.DeviceID("0000:00:02.1"))
+	}
 	if v := m.VFs(); len(v) != 2 || v[0] != "0000:00:02.1" {
 		t.Fatalf("vfs %v", v)
 	}

@@ -21,14 +21,18 @@ UNIT=/etc/systemd/system/tossbox-gpu-vfs.service
 
 need_root() { [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }; }
 
+# drv <sysfs device dir>: bound driver name or "none".
+drv() { if [ -e "$1/driver" ]; then basename "$(readlink -f "$1/driver")"; else echo none; fi; }
+
 status() {
 	echo "PF $PF: $(lspci -nns "${PF#0000:}" 2>/dev/null | cut -d' ' -f2-)"
-	echo "driver: $(basename "$(readlink -f "$SYS/driver" 2>/dev/null)" 2>/dev/null || echo none)"
+	echo "driver: $(drv "$SYS")"
 	echo "VFs: $(cat "$SYS/sriov_numvfs" 2>/dev/null || echo -) of $(cat "$SYS/sriov_totalvfs" 2>/dev/null || echo -)"
 	for v in "$SYS"/virtfn*; do
 		[ -e "$v" ] || continue
 		a=$(basename "$(readlink -f "$v")")
-		echo "  $a driver=$(basename "$(readlink -f "/sys/bus/pci/devices/$a/driver" 2>/dev/null)" 2>/dev/null || echo none)"
+		g=$(basename "$(readlink -f "/sys/bus/pci/devices/$a/iommu_group" 2>/dev/null)" 2>/dev/null)
+		echo "  $a driver=$(drv "/sys/bus/pci/devices/$a") iommu_group=${g:-none}"
 	done
 	echo "IOMMU groups: $(ls /sys/kernel/iommu_groups 2>/dev/null | wc -l)"
 	echo "kernel cmdline: $(cat /proc/cmdline)"

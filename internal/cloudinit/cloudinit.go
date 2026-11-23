@@ -28,6 +28,10 @@ type Params struct {
 	// installed (template param cloudinit.script). Output goes to
 	// /var/log/tossbox-setup.log.
 	Script string
+	// GPUForceProbe is the PCI device ID (e.g. "4692") of a passed-through
+	// Intel GPU VF that the guest's xe driver only binds with force_probe
+	// (platforms not officially supported by xe). Empty = nothing to do.
+	GPUForceProbe string
 }
 
 // TemplateExtras reads the generic cloud-init template params:
@@ -95,6 +99,13 @@ func Linux(p Params) (Seed, error) {
 	}
 	pkgs = append(pkgs, p.Packages...)
 	var files []any
+	if id := p.GPUForceProbe; id != "" {
+		files = append(files, map[string]any{"path": "/etc/modprobe.d/tossbox-gpu.conf", "permissions": "0644",
+			"content": "# Tossbox: SR-IOV GPU VF (xe driver, force probe)\noptions xe force_probe=" + id + "\noptions i915 force_probe=!" + id + "\n"})
+		// The driver already gave up during this boot: bind it now. The
+		// modprobe.d options apply on later boots (initramfs is updated too).
+		runcmd = append(runcmd, []string{"sh", "-c", "modprobe -r xe 2>/dev/null; modprobe xe; command -v update-initramfs >/dev/null && update-initramfs -u >/dev/null 2>&1; true"})
+	}
 	if p.Script != "" {
 		files = append(files, map[string]any{"path": "/var/lib/tossbox/setup.sh", "permissions": "0755", "content": p.Script})
 		runcmd = append(runcmd, []string{"sh", "-c", "bash /var/lib/tossbox/setup.sh > /var/log/tossbox-setup.log 2>&1"})

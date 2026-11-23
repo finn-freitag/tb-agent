@@ -476,6 +476,8 @@ func (d *Driver) create(ctx context.Context, lv *golibvirt.Libvirt, spec *agentv
 			Password:   password,
 			SSHKeys:    spec.GetSshAuthorizedKeys(),
 			ProductKey: productKey,
+
+			GPUForceProbe: d.forceProbeID(vf),
 		}.WithTemplate(tpl.GetParams()))
 		if err != nil {
 			return golibvirt.Domain{}, err
@@ -843,4 +845,21 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// forceProbeID returns the device ID Linux guests must force-probe for an
+// Intel VF (xe requires it on platforms it doesn't officially support, e.g.
+// 12th gen), or "" (no VF / not Intel / GPU manager without device info).
+func (d *Driver) forceProbeID(vf string) string {
+	if vf == "" {
+		return ""
+	}
+	info, ok := d.env.GPU.(interface {
+		DeviceID(string) string
+		IntelVendor(string) bool
+	})
+	if !ok || !info.IntelVendor(vf) {
+		return ""
+	}
+	return info.DeviceID(vf)
 }

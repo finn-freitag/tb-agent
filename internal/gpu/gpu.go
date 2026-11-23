@@ -121,6 +121,27 @@ func (m *Manager) VFs() []string {
 	return out
 }
 
+// DeviceID returns the PCI device ID of a device (e.g. "4692"), "" if unknown.
+func (m *Manager) DeviceID(addr string) string {
+	if m == nil || !ValidPCI(addr) {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(m.sysfs, "bus", "pci", "devices", addr, "device"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(b)), "0x")
+}
+
+// IntelVendor reports whether a PCI device is an Intel device.
+func (m *Manager) IntelVendor(addr string) bool {
+	if m == nil || !ValidPCI(addr) {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(m.sysfs, "bus", "pci", "devices", addr, "vendor"))
+	return err == nil && strings.TrimSpace(string(b)) == "0x8086"
+}
+
 // Acquire leases a virtual function to the device (idempotent).
 func (m *Manager) Acquire(deviceID string) (string, error) {
 	m.mu.Lock()

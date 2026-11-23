@@ -76,3 +76,19 @@ func TestLinuxTemplateExtras(t *testing.T) {
 		}
 	}
 }
+
+func TestLinuxGPUForceProbe(t *testing.T) {
+	seed, err := Linux(Params{InstanceID: "d1", Hostname: "h", User: "u", Password: "p", GPUForceProbe: "4692"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := string(seed.UserData)
+	for _, want := range []string{"/etc/modprobe.d/tossbox-gpu.conf", "options xe force_probe=4692", "options i915 force_probe=!4692", "modprobe xe"} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("missing %q in\n%s", want, ud)
+		}
+	}
+	if seed, _ := Linux(Params{InstanceID: "d1", Hostname: "h", User: "u", Password: "p"}); strings.Contains(string(seed.UserData), "force_probe") {
+		t.Error("force_probe without GPU")
+	}
+}
