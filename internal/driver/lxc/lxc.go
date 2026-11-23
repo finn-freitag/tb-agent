@@ -140,7 +140,7 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 		NetworkPolicies: []string{driver.PolicyInternet, driver.PolicyOffline},
 	}
 	if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
-		caps.GpuMode, caps.GpuSlots = "render", -1 // Incus gpu device (host render node)
+		caps.GpuMode, caps.GpuSlots, caps.GpuFamilies = "render", -1, []string{"linux"} // Incus gpu device (host render node)
 	}
 	if d.cfg.AllowVMs {
 		caps.Services = append(caps.Services, "vnc")

@@ -79,7 +79,7 @@ func TestConfigDecode(t *testing.T) {
 
 func TestPlanWindows(t *testing.T) {
 	d := New(driver.Env{DataDir: "/data"}, Config{HostStorageDir: "/host/devices"})
-	p, err := d.plan(winSpec(), "KEY-1")
+	p, err := d.plan(winSpec(), "KEY-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestPlanLinux(t *testing.T) {
 			Image:  &agentv1.ImageSpec{Url: "docker://qemux/qemu", Format: "container"},
 			Params: map[string]string{"docker_qemu.boot_image": "https://x/debian.qcow2"}},
 		Resources: &agentv1.Resources{Vcpus: 2, RamMb: 1536, StorageGb: 20}}
-	p, err := d.plan(spec, "")
+	p, err := d.plan(spec, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestPlanLinux(t *testing.T) {
 		t.Error(p.Config.HostConfig.Binds)
 	}
 	spec.Template.Params = nil
-	if _, err := d.plan(spec, ""); err == nil {
+	if _, err := d.plan(spec, "", ""); err == nil {
 		t.Error("expected error without boot image")
 	}
 }
@@ -312,21 +312,69 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
-type fakeGPU struct{ node string }
+type fakeGPU struct {
+	node string
+	vfs  []string
+}
 
-func (f fakeGPU) RenderNode() string             { return f.node }
-func (f fakeGPU) VFs() []string                  { return nil }
-func (f fakeGPU) Acquire(string) (string, error) { return "", errors.New("no VFs") }
-func (f fakeGPU) Release(string)                 {}
+func (f fakeGPU) RenderNode() string { return f.node }
+func (f fakeGPU) VFs() []string      { return f.vfs }
+func (f fakeGPU) Acquire(string) (string, error) {
+	if len(f.vfs) == 0 {
+		return "", errors.New("no VFs")
+	}
+	return f.vfs[0], nil
+}
+func (f fakeGPU) Release(string)           {}
+func (f fakeGPU) IOMMUGroup(string) string { return "16" }
+func (f fakeGPU) DeviceID(string) string   { return "4692" }
+func (f fakeGPU) IntelVendor(string) bool  { return true }
+
+func TestPlanWindowsVF(t *testing.T) {
+	d := New(driver.Env{DataDir: "/data", GPU: fakeGPU{node: "/dev/dri/renderD128", vfs: []string{"0000:00:02.3"}}}, Config{})
+	if d.gpuMode() != "sriov" {
+		t.Fatalf("mode %q", d.gpuMode())
+	}
+	caps := d.Capabilities(context.Background())
+	if caps.GpuMode != "sriov" || caps.GpuSlots != 1 || !slices.Contains(caps.GpuFamilies, "windows") {
+		t.Fatalf("caps %+v", caps)
+	}
+	spec := winSpec()
+	spec.Resources.Gpus = 1
+	p, err := d.plan(spec, "", "0000:00:02.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hc := p.Config.HostConfig
+	var paths []string
+	for _, dm := range hc.Devices {
+		paths = append(paths, dm.PathOnHost)
+	}
+	if !slices.Contains(paths, "/dev/vfio/vfio") || !slices.Contains(paths, "/dev/vfio/16") || !slices.Contains(hc.CapAdd, "IPC_LOCK") ||
+		len(hc.Ulimits) != 1 || hc.Ulimits[0].Name != "memlock" || hc.Ulimits[0].Hard != -1 {
+		t.Errorf("hostconfig %+v", hc)
+	}
+	if a := envOf(p.Config.Env, "ARGUMENTS"); a != "-device vfio-pci,host=0000:00:02.3" {
+		t.Errorf("ARGUMENTS %q", a)
+	}
+	// Render-only node: Windows can't get a GPU, Linux gets VirGL.
+	d = New(driver.Env{DataDir: "/data", GPU: fakeGPU{node: "/dev/dri/renderD128"}}, Config{})
+	if c := d.Capabilities(context.Background()); c.GpuMode != "render" || slices.Contains(c.GpuFamilies, "windows") {
+		t.Errorf("render caps %+v", c)
+	}
+	if _, err := d.plan(spec, "", ""); err == nil {
+		t.Error("Windows GPU without VF accepted")
+	}
+}
 
 func TestPlanOfflineGPU(t *testing.T) {
-	d := New(driver.Env{DataDir: "/data", GPU: fakeGPU{"/dev/dri/renderD128"}}, Config{})
+	d := New(driver.Env{DataDir: "/data", GPU: fakeGPU{node: "/dev/dri/renderD128"}}, Config{})
 	spec := &agentv1.DeviceSpec{DeviceId: "d3", Hostname: "deb", NetworkPolicy: "offline",
 		Template: &agentv1.TemplateSpec{Id: "debian-13", Family: "linux", GuestProfile: "cloud-init", DefaultUser: "tossbox",
 			Image:  &agentv1.ImageSpec{Url: "docker://qemux/qemu", Format: "container"},
 			Params: map[string]string{"docker_qemu.boot_image": "https://x/debian.qcow2"}},
 		Resources: &agentv1.Resources{Vcpus: 2, RamMb: 1536, StorageGb: 20, Gpus: 1}}
-	p, err := d.plan(spec, "")
+	p, err := d.plan(spec, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,12 +385,12 @@ func TestPlanOfflineGPU(t *testing.T) {
 		t.Errorf("GPU not passed: %v %v", p.Config.Env, p.Config.HostConfig.Devices)
 	}
 	spec.Template.Family = "windows"
-	if _, err := d.plan(spec, ""); err == nil {
+	if _, err := d.plan(spec, "", ""); err == nil {
 		t.Error("GPU for Windows guests must be rejected")
 	}
 	spec.NetworkPolicy = "lan"
 	spec.Template.Family = "linux"
-	if _, err := d.plan(spec, ""); err == nil {
+	if _, err := d.plan(spec, "", ""); err == nil {
 		t.Error("unknown policy accepted")
 	}
 }

@@ -133,6 +133,18 @@ func (m *Manager) DeviceID(addr string) string {
 	return strings.TrimPrefix(strings.TrimSpace(string(b)), "0x")
 }
 
+// IOMMUGroup returns the IOMMU group number of a device ("" if unknown).
+func (m *Manager) IOMMUGroup(addr string) string {
+	if m == nil || !ValidPCI(addr) {
+		return ""
+	}
+	t, err := os.Readlink(filepath.Join(m.sysfs, "bus", "pci", "devices", addr, "iommu_group"))
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(t)
+}
+
 // IntelVendor reports whether a PCI device is an Intel device.
 func (m *Manager) IntelVendor(addr string) bool {
 	if m == nil || !ValidPCI(addr) {

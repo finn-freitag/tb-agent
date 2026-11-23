@@ -155,7 +155,7 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 	if _, ok := d.backends["redroid"]; ok && slices.Contains(caps.Backends, "redroid") {
 		caps.NetworkPolicies = []string{driver.PolicyInternet, driver.PolicyOffline}
 		if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
-			caps.GpuMode, caps.GpuSlots = "render", -1
+			caps.GpuMode, caps.GpuSlots, caps.GpuFamilies = "render", -1, []string{"android"}
 		}
 	} else {
 		caps.NetworkPolicies = []string{driver.PolicyInternet}

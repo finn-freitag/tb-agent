@@ -114,6 +114,7 @@ func (a *Agent) capabilities(ctx context.Context) *agentv1.Capabilities {
 			StorageGb:  a.cfg.StorageLimitGB,
 		},
 		LicensePools: a.licenses.Pools(),
+		LocalImages:  a.images.Local(),
 	}
 	for _, name := range a.cfg.DriverNames() {
 		dc := a.drivers[name].Capabilities(ctx)

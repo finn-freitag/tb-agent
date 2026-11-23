@@ -67,8 +67,9 @@ Before=libvirtd.service docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# VFs are bound to vfio-pci by libvirt when a VM starts, not to xe on the host.
-ExecStart=/bin/sh -c 'for i in \$(seq 30); do [ -e $SYS/sriov_numvfs ] && [ -e $SYS/driver ] && break; sleep 1; done; echo 0 > $SYS/sriov_drivers_autoprobe; [ "\$(cat $SYS/sriov_numvfs)" = $N ] || echo $N > $SYS/sriov_numvfs'
+# VFs are bound to vfio-pci (never to xe on the host): libvirt VMs and
+# docker-qemu containers pass them through with VFIO.
+ExecStart=/bin/sh -c 'for i in \$(seq 30); do [ -e $SYS/sriov_numvfs ] && [ -e $SYS/driver ] && break; sleep 1; done; echo 0 > $SYS/sriov_drivers_autoprobe; [ "\$(cat $SYS/sriov_numvfs)" = $N ] || echo $N > $SYS/sriov_numvfs; modprobe vfio-pci; for v in $SYS/virtfn*; do a=\$(basename \$(readlink -f \$v)); echo vfio-pci > /sys/bus/pci/devices/\$a/driver_override; [ -e /sys/bus/pci/devices/\$a/driver ] || echo \$a > /sys/bus/pci/drivers_probe; done'
 ExecStop=/bin/sh -c 'echo 0 > $SYS/sriov_numvfs'
 
 [Install]
@@ -78,7 +79,12 @@ X
 	systemctl enable tossbox-gpu-vfs.service
 	update-grub
 	echo
-	echo "Reboot to switch $PF to the xe driver with $N VFs. Afterwards check: sudo sh $0 sriov-status"
+	if [ "$(basename "$(readlink -f "$SYS/driver" 2>/dev/null)")" = xe ] && [ "$(cat "$SYS/sriov_numvfs")" -gt 0 ]; then
+		systemctl restart tossbox-gpu-vfs.service
+		echo "SR-IOV already active: VFs re-created and bound to vfio-pci (no reboot needed)."
+	else
+		echo "Reboot to switch $PF to the xe driver with $N VFs. Afterwards check: sudo sh $0 sriov-status"
+	fi
 	echo "Undo: sudo sh $0 revert && reboot"
 	;;
 sriov-status)

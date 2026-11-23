@@ -228,12 +228,19 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 	case "virgl":
 		if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
 			caps.GpuMode, caps.GpuSlots = "virgl", -1
+			// No usable VirGL driver for Windows guests.
+			for _, f := range d.cfg.Families {
+				if f != "windows" {
+					caps.GpuFamilies = append(caps.GpuFamilies, f)
+				}
+			}
 		} else {
 			gpuNote = "gpu: virgl configured, but no render node found (mount /dev/dri into the agent container)"
 		}
 	case "sriov":
 		if d.env.GPU != nil && len(d.env.GPU.VFs()) > 0 {
 			caps.GpuMode, caps.GpuSlots = "sriov", int32(len(d.env.GPU.VFs()))
+			caps.GpuFamilies = d.cfg.Families
 		} else {
 			gpuNote = "gpu: sriov configured, but no SR-IOV virtual functions found (gpu.sriov.pf/vfs, see deploy/host-gpu.sh)"
 		}

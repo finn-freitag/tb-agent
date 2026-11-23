@@ -113,11 +113,12 @@ Devices can ask for a GPU (`gpu: true` in the API, "Share the node's GPU" in the
 |---|---|---|
 | libvirt | `virgl` | `drivers.libvirt.gpu: virgl`: shared paravirtual 3D (virtio-gpu with VirGL on the node's render node), unlimited devices. Needs the EGL libraries on the host (`sudo sh deploy/host-gpu.sh virgl`) and a guest kernel with virtio-gpu (Debian generic, Ubuntu, Fedora; not Debian `genericcloud`). Tested: OpenGL 4.3 "virgl (Intel UHD 730)" in a Debian guest. ChromeOS shows a garbled VNC picture with VirGL, so its templates don't use it by default |
 | libvirt | `sriov` | `drivers.libvirt.gpu: sriov` + `gpu.sriov.pf`: each device gets its own SR-IOV virtual function (PCI passthrough, bound to vfio-pci by libvirt), so as many devices as VFs. Intel iGPUs need the xe driver in SR-IOV mode: `sudo sh deploy/host-gpu.sh sriov 7` (reboot; `revert` undoes it). Tested on a UHD 730 (12th gen, kernel 7.0): 7 VFs; in an Ubuntu 26.04 guest the VF runs in "SR-IOV VF mode" with hardware H.264 decode and encode (VA-API, iHD). Linux guests get `xe force_probe` for the VF's device ID via cloud-init automatically; Windows guests need Intel's current graphics driver. The VM screen (VNC/Guacamole) still comes from the emulated display |
-| docker-qemu | `render` | qemux renders the guest's virtio-gpu with VirGL (`GPU=Y`, `/dev/dri`); Linux guests |
+| docker-qemu | `sriov` | default when the node has VFs (`drivers.docker-qemu.gpu: auto`): the VF is passed through with VFIO (`/dev/vfio/<group>`, `IPC_LOCK`, unlimited memlock, `-device vfio-pci`). Works for Windows (dockur, no golden image needed) and Linux guests. `host-gpu.sh sriov` binds the VFs to vfio-pci. libvirt and docker-qemu share one pool of VFs |
+| docker-qemu | `render` | without VFs: qemux renders the guest's virtio-gpu with VirGL (`GPU=Y`, `/dev/dri`); Linux guests only |
 | android (redroid) | `render` | the device renders on the host GPU (`androidboot.redroid_gpu_mode=host`) |
 | lxc | `render` | an Incus `gpu` device (the container sees the host's render node) |
 
-The agent container needs `/dev/dri` (see `docker-compose.yml`) to find the render node. Templates can mark a GPU as `required` or `recommended` (param `gpu`). Admins can limit devices with a GPU per user (quota `max_gpus`).
+Drivers report which guest families can use their GPU, and the agent reports its `local:` images (Packer golden images). The dashboard only places a device where both fit. For example, a Windows device with a GPU goes to docker-qemu when libvirt has no Windows golden image. The agent container needs `/dev/dri` (see `docker-compose.yml`) to find the render node. Templates can mark a GPU as `required` or `recommended` (param `gpu`). Admins can limit devices with a GPU per user (quota `max_gpus`).
 
 ## Disposable browsers
 

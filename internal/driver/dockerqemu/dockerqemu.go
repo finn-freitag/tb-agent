@@ -55,7 +55,12 @@ type Config struct {
 	Network string `yaml:"network"`
 	// OfflineNetwork is used for devices with the "offline" policy (an
 	// internal Docker network without outbound traffic; default "tossbox-offline").
-	OfflineNetwork string        `yaml:"offline_network"`
+	OfflineNetwork string `yaml:"offline_network"`
+	// GPU: how devices that request a GPU get one. "auto" (default): an
+	// SR-IOV virtual function (VFIO passthrough, Linux and Windows guests)
+	// when the node has VFs, otherwise VirGL on the render node (Linux
+	// guests). "sriov", "render" or "none" force a mode.
+	GPU            string        `yaml:"gpu"`
 	StorageDir     string        `yaml:"storage_dir"`
 	HostStorageDir string        `yaml:"host_storage_dir"`
 	PreparedDir    string        `yaml:"prepared_dir"`
@@ -75,6 +80,9 @@ func (c *Config) defaults(env driver.Env) {
 	}
 	if c.OfflineNetwork == "" {
 		c.OfflineNetwork = dockerapi.OfflineNetwork
+	}
+	if c.GPU == "" {
+		c.GPU = "auto"
 	}
 	if c.StorageDir == "" {
 		c.StorageDir = filepath.Join(env.DataDir, "devices")
@@ -137,8 +145,11 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 
 		NetworkPolicies: []string{driver.PolicyInternet, driver.PolicyOffline},
 	}
-	if d.env.GPU != nil && d.env.GPU.RenderNode() != "" {
-		caps.GpuMode, caps.GpuSlots = "render", -1 // Linux guests (qemux virgl)
+	switch d.gpuMode() {
+	case "sriov":
+		caps.GpuMode, caps.GpuSlots, caps.GpuFamilies = "sriov", int32(len(d.env.GPU.VFs())), []string{"linux", "windows"}
+	case "render":
+		caps.GpuMode, caps.GpuSlots, caps.GpuFamilies = "render", -1, []string{"linux"} // qemux VirGL
 	}
 	if err := d.docker.Ping(ctx); err != nil {
 		caps.Healthy = false
@@ -150,6 +161,29 @@ func (d *Driver) Capabilities(ctx context.Context) *agentv1.DriverCapabilities {
 		caps.Message = "KVM not available: " + err.Error()
 	}
 	return caps
+}
+
+// gpuMode resolves the configured GPU mode against what the node has:
+// "sriov", "render" or "".
+func (d *Driver) gpuMode() string {
+	if d.env.GPU == nil || d.cfg.GPU == "none" {
+		return ""
+	}
+	vfs, rn := len(d.env.GPU.VFs()) > 0, d.env.GPU.RenderNode() != ""
+	switch {
+	case (d.cfg.GPU == "auto" || d.cfg.GPU == "sriov") && vfs:
+		return "sriov"
+	case (d.cfg.GPU == "auto" || d.cfg.GPU == "render") && rn:
+		return "render"
+	}
+	return ""
+}
+
+// gpuInfo is implemented by internal/gpu (device details for passthrough).
+type gpuInfo interface {
+	IOMMUGroup(addr string) string
+	DeviceID(addr string) string
+	IntelVendor(addr string) bool
 }
 
 func (d *Driver) setMessage(id, msg string) {
@@ -224,7 +258,9 @@ type containerPlan struct {
 }
 
 // plan maps a spec to a container plan (pure, unit tested).
-func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPlan, error) {
+// plan maps a spec to the container. vf is the SR-IOV virtual function
+// leased to the device ("" = none).
+func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey, vf string) (*containerPlan, error) {
 	tpl := spec.GetTemplate()
 	if tpl == nil {
 		return nil, errors.New("docker-qemu: spec has no template")
@@ -252,6 +288,7 @@ func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPl
 		env = append(env, fmt.Sprintf("DISK_SIZE=%dG", res.GetStorageGb()))
 	}
 	p := &containerPlan{Image: image}
+	var qemuArgs []string // extra QEMU arguments (ARGUMENTS of dockur / qemux)
 	binds := []string{d.hostPath(filepath.Join(dir, "storage")) + ":/storage"}
 
 	switch tpl.GetFamily() {
@@ -300,7 +337,7 @@ func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPl
 			if tpl.GetGuestProfile() == "cloud-init" {
 				p.SeedISO = true
 				binds = append(binds, d.hostPath(filepath.Join(dir, "seed.iso"))+":/seed.iso:ro")
-				env = append(env, "ARGUMENTS=-drive file=/seed.iso,format=raw,if=virtio,readonly=on")
+				qemuArgs = append(qemuArgs, "-drive file=/seed.iso,format=raw,if=virtio,readonly=on")
 			}
 		}
 	}
@@ -324,19 +361,42 @@ func (d *Driver) plan(spec *agentv1.DeviceSpec, productKey string) (*containerPl
 		NetworkMode:   p.Network,
 	}
 	if driver.WantsGPU(spec) {
-		// qemux renders the guest's virtio-gpu with VirGL on the host GPU.
-		if tpl.GetFamily() == "windows" {
-			return nil, errors.New("docker-qemu: GPU sharing is only available for Linux guests")
+		switch {
+		case vf != "":
+			// SR-IOV virtual function, passed through with VFIO (the host
+			// binds VFs to vfio-pci, see deploy/host-gpu.sh). QEMU must lock
+			// guest memory for DMA.
+			info, _ := d.env.GPU.(gpuInfo)
+			group := ""
+			if info != nil {
+				group = info.IOMMUGroup(vf)
+			}
+			if group == "" {
+				return nil, fmt.Errorf("docker-qemu: no IOMMU group for GPU VF %s", vf)
+			}
+			hc.Devices = append(hc.Devices,
+				dockerapi.DeviceMapping{PathOnHost: "/dev/vfio/vfio", PathInContainer: "/dev/vfio/vfio", CgroupPermissions: "rwm"},
+				dockerapi.DeviceMapping{PathOnHost: "/dev/vfio/" + group, PathInContainer: "/dev/vfio/" + group, CgroupPermissions: "rwm"})
+			hc.CapAdd = append(hc.CapAdd, "IPC_LOCK")
+			hc.Ulimits = append(hc.Ulimits, dockerapi.Ulimit{Name: "memlock", Soft: -1, Hard: -1})
+			qemuArgs = append(qemuArgs, "-device vfio-pci,host="+vf)
+		case tpl.GetFamily() == "windows":
+			return nil, errors.New("docker-qemu: Windows guests need an SR-IOV GPU virtual function (gpu.sriov on the node)")
+		default:
+			// qemux renders the guest's virtio-gpu with VirGL on the host GPU.
+			rn := ""
+			if d.env.GPU != nil {
+				rn = d.env.GPU.RenderNode()
+			}
+			if rn == "" {
+				return nil, errors.New("docker-qemu: no GPU on this node")
+			}
+			hc.Devices = append(hc.Devices, dockerapi.DeviceMapping{PathOnHost: "/dev/dri", PathInContainer: "/dev/dri", CgroupPermissions: "rwm"})
+			env = append(env, "GPU=Y")
 		}
-		rn := ""
-		if d.env.GPU != nil {
-			rn = d.env.GPU.RenderNode()
-		}
-		if rn == "" {
-			return nil, errors.New("docker-qemu: no GPU render node on this node")
-		}
-		hc.Devices = append(hc.Devices, dockerapi.DeviceMapping{PathOnHost: "/dev/dri", PathInContainer: "/dev/dri", CgroupPermissions: "rwm"})
-		env = append(env, "GPU=Y")
+	}
+	if len(qemuArgs) > 0 {
+		env = append(env, "ARGUMENTS="+strings.Join(qemuArgs, " "))
 	}
 	if capPct := res.GetCpuCapPercent(); capPct > 0 {
 		hc.NanoCPUs = int64(runtime.NumCPU()) * int64(capPct) * 1e7 // cores * pct/100 * 1e9
@@ -371,7 +431,14 @@ func (d *Driver) create(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 		}
 		key = k
 	}
-	p, err := d.plan(spec, key)
+	vf := ""
+	if driver.WantsGPU(spec) && d.gpuMode() == "sriov" {
+		var err error
+		if vf, err = d.env.GPU.Acquire(id); err != nil {
+			return err
+		}
+	}
+	p, err := d.plan(spec, key, vf)
 	if err != nil {
 		return err
 	}
@@ -418,9 +485,13 @@ func (d *Driver) create(ctx context.Context, spec *agentv1.DeviceSpec, report dr
 	}
 	if p.SeedISO {
 		user, password := credentials(spec)
+		probe := ""
+		if info, ok := d.env.GPU.(gpuInfo); ok && vf != "" && info.IntelVendor(vf) {
+			probe = info.DeviceID(vf) // xe needs force_probe on some platforms
+		}
 		seed, err := cloudinit.Linux(cloudinit.Params{
 			InstanceID: id, Hostname: spec.GetHostname(), User: user, Password: password,
-			SSHKeys: spec.GetSshAuthorizedKeys(),
+			SSHKeys: spec.GetSshAuthorizedKeys(), GPUForceProbe: probe,
 		}.WithTemplate(spec.GetTemplate().GetParams()))
 		if err != nil {
 			return err
@@ -457,6 +528,9 @@ func (d *Driver) Destroy(ctx context.Context, deviceID string) error {
 	}
 	if d.env.Licenses != nil {
 		d.env.Licenses.Release(deviceID)
+	}
+	if d.env.GPU != nil {
+		d.env.GPU.Release(deviceID)
 	}
 	d.mu.Lock()
 	delete(d.messages, deviceID)

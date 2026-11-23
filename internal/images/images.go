@@ -52,6 +52,23 @@ func New(dir string, log *slog.Logger) (*Store, error) {
 // Dir returns the root directory (local: images live here).
 func (s *Store) Dir() string { return s.dir }
 
+// Local lists the images available for local:<name> URLs (top level of the
+// image directory, e.g. Packer golden images).
+func (s *Store) Local() []string {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.Type().IsRegular() && !strings.HasSuffix(n, ".part") && !strings.HasPrefix(n, ".") {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func (s *Store) lock(key string) func() {
 	s.mu.Lock()
 	l, ok := s.locks[key]

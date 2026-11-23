@@ -216,6 +216,13 @@ type DeviceMapping struct {
 	CgroupPermissions string `json:"CgroupPermissions"`
 }
 
+// Ulimit is a resource limit of a container (-1 = unlimited).
+type Ulimit struct {
+	Name string `json:"Name"`
+	Soft int64  `json:"Soft"`
+	Hard int64  `json:"Hard"`
+}
+
 // RestartPolicy of a container.
 type RestartPolicy struct {
 	Name string `json:"Name"`
@@ -234,6 +241,7 @@ type HostConfig struct {
 	NetworkMode       string          `json:"NetworkMode,omitempty"`
 	SecurityOpt       []string        `json:"SecurityOpt,omitempty"`
 	ShmSize           int64           `json:"ShmSize,omitempty"`
+	Ulimits           []Ulimit        `json:"Ulimits,omitempty"`
 	PidsLimit         int64           `json:"PidsLimit,omitempty"`
 }
 

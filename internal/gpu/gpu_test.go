@@ -29,6 +29,11 @@ func TestManager(t *testing.T) {
 	os.MkdirAll(vf, 0o755)
 	os.WriteFile(filepath.Join(vf, "device"), []byte("0x4692\n"), 0o644)
 	os.WriteFile(filepath.Join(vf, "vendor"), []byte("0x8086\n"), 0o644)
+	os.MkdirAll(filepath.Join(root, "sys", "kernel", "iommu_groups", "15"), 0o755)
+	os.Symlink("../../../../kernel/iommu_groups/15", filepath.Join(vf, "iommu_group"))
+	if g := m.IOMMUGroup("0000:00:02.1"); g != "15" {
+		t.Fatalf("iommu group %q", g)
+	}
 	if m.DeviceID("0000:00:02.1") != "4692" || !m.IntelVendor("0000:00:02.1") || m.IntelVendor("0000:00:02.2") {
 		t.Fatalf("device info: %q", m.DeviceID("0000:00:02.1"))
 	}
