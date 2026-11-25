@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/finn-freitag/tb-agent/internal/adbkey"
+	agentv1 "github.com/finn-freitag/tb-proto/gen/agent/v1"
 )
 
 func serve(t *testing.T, handle func(net.Conn)) string {
@@ -216,5 +217,22 @@ func TestRealADBAuth(t *testing.T) {
 	t.Logf("adbd at %s: %s", addr, result)
 	if want := os.Getenv("TB_ADB_EXPECT"); want != "" && want != result {
 		t.Fatalf("got %s, want %s", result, want)
+	}
+}
+
+func TestUsageChanged(t *testing.T) {
+	base := &agentv1.DeviceStatus{MemoryUsedMb: 1000, CpuUsedPercent: 10, StorageUsedMb: 500}
+	for _, c := range []struct {
+		st   *agentv1.DeviceStatus
+		want bool
+	}{
+		{&agentv1.DeviceStatus{MemoryUsedMb: 1008, CpuUsedPercent: 10.5, StorageUsedMb: 500}, false},
+		{&agentv1.DeviceStatus{MemoryUsedMb: 1020, CpuUsedPercent: 10, StorageUsedMb: 500}, true},
+		{&agentv1.DeviceStatus{MemoryUsedMb: 1000, CpuUsedPercent: 12, StorageUsedMb: 500}, true},
+		{&agentv1.DeviceStatus{MemoryUsedMb: 1000, CpuUsedPercent: 10, StorageUsedMb: 501}, true},
+	} {
+		if got := usageChanged(base, c.st); got != c.want {
+			t.Errorf("%+v: got %v", c.st, got)
+		}
 	}
 }

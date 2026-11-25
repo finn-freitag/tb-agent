@@ -41,6 +41,7 @@ type device struct {
 	retryAt    time.Time
 
 	status    *agentv1.DeviceStatus
+	usageSent time.Time // last status sent because of changed resource usage
 	readyAt   time.Time
 	everReady bool // passed readiness at least once (first-boot messages are stale after that)
 	destroyed bool
@@ -283,7 +284,23 @@ func (m *Manager) setStatusLocked(d *device, st *agentv1.DeviceStatus) {
 	if old == nil || old.State != st.State || old.Ready != st.Ready || old.Message != st.Message ||
 		old.InternalIp != st.InternalIp || abs(old.StorageUsedMb-st.StorageUsedMb) >= 256 {
 		m.emitLocked(st)
+		d.usageSent = time.Now()
+		return
 	}
+	// Measured usage (RAM, CPU, disk) is refreshed at most every 30 s.
+	sent := d.usageSent
+	if usageChanged(old, st) && time.Since(sent) >= usageInterval {
+		m.emitLocked(st)
+		d.usageSent = time.Now()
+	}
+}
+
+// usageInterval limits status messages caused only by changed usage.
+const usageInterval = 30 * time.Second
+
+func usageChanged(old, st *agentv1.DeviceStatus) bool {
+	diff := old.GetCpuUsedPercent() - st.GetCpuUsedPercent()
+	return abs(old.MemoryUsedMb-st.MemoryUsedMb) >= 16 || old.StorageUsedMb != st.StorageUsedMb || diff >= 1 || diff <= -1
 }
 
 func abs(v int64) int64 {

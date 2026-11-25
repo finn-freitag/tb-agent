@@ -345,15 +345,37 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (*ContainerInf
 // ContainerMemoryMB returns the container's current memory use in MiB
 // (cgroup usage minus reclaimable page cache, like `docker stats`).
 func (c *Client) ContainerMemoryMB(ctx context.Context, id string) (int64, error) {
+	u, err := c.ContainerUsage(ctx, id)
+	return u.MemoryMB, err
+}
+
+// Usage is a sample of a container's resource usage.
+type Usage struct {
+	MemoryMB int64
+	// CPUNs is the container's cumulative CPU time and SystemNs the host's
+	// cumulative CPU time over all cores (both ns); feed them to a
+	// driver.CPUMeter.
+	CPUNs, SystemNs uint64
+}
+
+// ContainerUsage returns memory (without page cache) and cumulative CPU
+// counters of a container.
+func (c *Client) ContainerUsage(ctx context.Context, id string) (Usage, error) {
 	var out struct {
 		MemoryStats struct {
 			Usage uint64            `json:"usage"`
 			Stats map[string]uint64 `json:"stats"`
 		} `json:"memory_stats"`
+		CPUStats struct {
+			CPUUsage struct {
+				TotalUsage uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+			SystemCPUUsage uint64 `json:"system_cpu_usage"`
+		} `json:"cpu_stats"`
 	}
 	q := url.Values{"stream": {"false"}, "one-shot": {"true"}}
 	if err := c.doJSON(ctx, http.MethodGet, "/containers/"+url.PathEscape(id)+"/stats", q, nil, &out); err != nil {
-		return 0, err
+		return Usage{}, err
 	}
 	used := out.MemoryStats.Usage
 	cache := out.MemoryStats.Stats["inactive_file"] // cgroup v2
@@ -363,7 +385,7 @@ func (c *Client) ContainerMemoryMB(ctx context.Context, id string) (int64, error
 	if cache < used {
 		used -= cache
 	}
-	return int64(used >> 20), nil
+	return Usage{MemoryMB: int64(used >> 20), CPUNs: out.CPUStats.CPUUsage.TotalUsage, SystemNs: out.CPUStats.SystemCPUUsage}, nil
 }
 
 // ContainerSummary is an entry of GET /containers/json.

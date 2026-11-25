@@ -118,6 +118,7 @@ type Driver struct {
 	lv *golibvirt.Libvirt
 
 	baseMu sync.Mutex // serializes base image uploads
+	cpu    driver.CPUMeter
 }
 
 // New creates the driver (connects lazily).
@@ -782,6 +783,11 @@ func (d *Driver) status(lv *golibvirt.Libvirt, dom golibvirt.Domain, deviceID st
 				}
 			}
 		}
+		if _, _, _, _, cpuTime, err := lv.DomainGetInfo(dom); err == nil {
+			s.CpuUsedPercent = d.cpu.Percent(deviceID, float64(cpuTime), driver.WallTotal(int(hostinfo.Cores())))
+		}
+	} else {
+		d.cpu.Forget(deviceID)
 	}
 	if pool, err := lv.StoragePoolLookupByName(d.cfg.StoragePool); err == nil {
 		if vol, err := lv.StorageVolLookupByName(pool, diskName(deviceID)); err == nil {

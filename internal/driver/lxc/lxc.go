@@ -108,6 +108,7 @@ type Driver struct {
 	env   driver.Env
 	incus *incusClient
 	cores int
+	cpu   driver.CPUMeter
 }
 
 func init() {
@@ -435,6 +436,11 @@ func (d *Driver) Status(ctx context.Context, deviceID string) (*agentv1.DeviceSt
 		out.StorageUsedMb = root.Usage >> 20
 	}
 	out.MemoryUsedMb = st.Memory.Usage >> 20
+	if out.State == agentv1.DeviceState_DEVICE_STATE_RUNNING {
+		out.CpuUsedPercent = d.cpu.Percent(deviceID, float64(st.CPU.Usage), driver.WallTotal(d.cores))
+	} else {
+		d.cpu.Forget(deviceID)
+	}
 	return out, nil
 }
 

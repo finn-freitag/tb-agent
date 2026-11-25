@@ -109,6 +109,7 @@ type Driver struct {
 	cfg    Config
 	env    driver.Env
 	docker *dockerapi.Client
+	cpu    driver.CPUMeter
 	// seedISO builds a NoCloud seed ISO (overridable in tests).
 	seedISO SeedBuilder
 
@@ -573,8 +574,9 @@ func (d *Driver) Status(ctx context.Context, deviceID string) (*agentv1.DeviceSt
 	st.State = containerState(ci.State.Status)
 	if ci.State.Running {
 		st.InternalIp = ci.IP(d.cfg.Network)
-		if mb, err := d.docker.ContainerMemoryMB(ctx, ci.ID); err == nil {
-			st.MemoryUsedMb = mb
+		if u, err := d.docker.ContainerUsage(ctx, ci.ID); err == nil {
+			st.MemoryUsedMb = u.MemoryMB
+			st.CpuUsedPercent = d.cpu.Percent(deviceID, float64(u.CPUNs), float64(u.SystemNs))
 		}
 	}
 	d.mu.Lock()

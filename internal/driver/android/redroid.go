@@ -45,6 +45,7 @@ type redroid struct {
 	cfg    RedroidConfig
 	env    driver.Env
 	docker *dockerapi.Client
+	cpu    driver.CPUMeter
 	// binderCheck verifies kernel binder support (overridable in tests).
 	binderCheck func() error
 	// ashmemCheck reports whether the kernel has ashmem (overridable in tests).
@@ -287,8 +288,9 @@ func (r *redroid) status(ctx context.Context, id string) (*agentv1.DeviceStatus,
 	case "running", "restarting":
 		st.State = agentv1.DeviceState_DEVICE_STATE_RUNNING
 		st.InternalIp = ci.IP(r.cfg.Network)
-		if mb, err := r.docker.ContainerMemoryMB(ctx, ci.ID); err == nil {
-			st.MemoryUsedMb = mb
+		if u, err := r.docker.ContainerUsage(ctx, ci.ID); err == nil {
+			st.MemoryUsedMb = u.MemoryMB
+			st.CpuUsedPercent = r.cpu.Percent(id, float64(u.CPUNs), float64(u.SystemNs))
 		}
 	case "created":
 		st.State = agentv1.DeviceState_DEVICE_STATE_PENDING

@@ -218,6 +218,9 @@ type instanceState struct {
 	Memory struct {
 		Usage int64 `json:"usage"`
 	} `json:"memory"`
+	CPU struct {
+		Usage int64 `json:"usage"` // cumulative CPU time, ns
+	} `json:"cpu"`
 }
 
 func (c *incusClient) create(ctx context.Context, body instancesPost) error {

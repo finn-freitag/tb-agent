@@ -55,6 +55,7 @@ type Driver struct {
 	cfg    Config
 	env    driver.Env
 	docker *dockerapi.Client
+	cpu    driver.CPUMeter
 }
 
 func init() {
@@ -262,8 +263,9 @@ func (d *Driver) Status(ctx context.Context, id string) (*agentv1.DeviceStatus, 
 	case "running", "restarting":
 		st.State = agentv1.DeviceState_DEVICE_STATE_RUNNING
 		st.InternalIp = ci.IP("")
-		if mb, err := d.docker.ContainerMemoryMB(ctx, ci.ID); err == nil {
-			st.MemoryUsedMb = mb
+		if u, err := d.docker.ContainerUsage(ctx, ci.ID); err == nil {
+			st.MemoryUsedMb = u.MemoryMB
+			st.CpuUsedPercent = d.cpu.Percent(id, float64(u.CPUNs), float64(u.SystemNs))
 		}
 	case "created":
 		st.State = agentv1.DeviceState_DEVICE_STATE_PENDING
