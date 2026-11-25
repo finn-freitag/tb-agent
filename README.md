@@ -92,6 +92,10 @@ Requirements on the host: libvirt with QEMU/KVM, a libvirt network (default `def
 
 **Networking:** the VM's IP comes from the libvirt network's DHCP leases, or the guest agent when using `bridge`. The agent forwards public ports to `<vm ip>:<internal port>`. Each VM's bridge port is isolated (`<port isolated='yes'/>`, `isolate_ports: true` by default), so VMs on the same network can't reach each other.
 
+## File transfer
+
+Linux devices provisioned with cloud-init get `rsync` and an SFTP subsystem (`internal-sftp` if the image configures none), so `scp -r`, `sftp` and `rsync -e ssh` work for uploading projects and downloading results. Windows devices (OpenSSH) support `scp` and `sftp`, not rsync. Tested through the public gateway, upload and download with identical checksums.
+
 ## Device isolation
 
 Devices of different users share a node, so the agent keeps them apart:

@@ -92,3 +92,16 @@ func TestLinuxGPUForceProbe(t *testing.T) {
 		t.Error("force_probe without GPU")
 	}
 }
+
+func TestLinuxFileTransfer(t *testing.T) {
+	seed, err := Linux(Params{InstanceID: "d1", Hostname: "h", User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ud := string(seed.UserData)
+	for _, want := range []string{"- rsync", "Subsystem sftp internal-sftp", "sshd -T"} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("missing %q in\n%s", want, ud)
+		}
+	}
+}

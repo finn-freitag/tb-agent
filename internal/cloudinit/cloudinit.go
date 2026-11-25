@@ -76,6 +76,14 @@ func metaData(p Params) []byte {
 	return b
 }
 
+// sshdSetup enables password logins and, if none is configured, the
+// built-in SFTP server, then (re)starts sshd (systemd or OpenRC).
+const sshdSetup = `rm -f /etc/ssh/sshd_config.d/*-cloudimg-settings.conf; mkdir -p /etc/ssh/sshd_config.d
+printf 'PasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/00-tossbox.conf
+grep -qs '^Include.*sshd_config.d' /etc/ssh/sshd_config || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+if ! sshd -T 2>/dev/null | grep -qi '^subsystem sftp'; then printf 'Subsystem sftp internal-sftp\n' >> /etc/ssh/sshd_config.d/00-tossbox.conf; fi
+for s in ssh sshd; do systemctl enable $s 2>/dev/null; systemctl restart $s 2>/dev/null; rc-update add $s 2>/dev/null; rc-service $s restart 2>/dev/null; done; true`
+
 // Linux builds a cloud-init seed: hostname, default user with password and
 // sudo, SSH keys, password SSH login and the QEMU guest agent.
 func Linux(p Params) (Seed, error) {
@@ -91,12 +99,18 @@ func Linux(p Params) (Seed, error) {
 	var pkgs []string
 	runcmd := []any{
 		// Some images ship sshd drop-ins that disable password logins.
-		[]string{"sh", "-c", "rm -f /etc/ssh/sshd_config.d/*-cloudimg-settings.conf; mkdir -p /etc/ssh/sshd_config.d; printf 'PasswordAuthentication yes\\n' > /etc/ssh/sshd_config.d/00-tossbox.conf; for s in ssh sshd; do systemctl enable $s 2>/dev/null; systemctl restart $s 2>/dev/null; rc-update add $s 2>/dev/null; rc-service $s restart 2>/dev/null; done; true"},
+		// Some images ship sshd drop-ins that disable password logins, and some
+		// (e.g. Incus cloud images) an sshd_config without an SFTP subsystem,
+		// which scp (SFTP protocol) and sftp need for file transfers.
+		[]string{"sh", "-c", sshdSetup},
 	}
 	if !p.NoGuestAgent {
 		pkgs = append(pkgs, "qemu-guest-agent")
 		runcmd = append(runcmd, []string{"sh", "-c", "systemctl enable --now --no-block qemu-guest-agent 2>/dev/null || true"})
 	}
+	// rsync: file transfers / project uploads over SSH (same package name
+	// on all common distributions).
+	pkgs = append(pkgs, "rsync")
 	pkgs = append(pkgs, p.Packages...)
 	var files []any
 	if id := p.GPUForceProbe; id != "" {
